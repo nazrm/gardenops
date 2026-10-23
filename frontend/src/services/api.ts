@@ -743,7 +743,6 @@ export interface AuthUserProfile {
   auth_type: "none" | "session" | "api_key";
   write_access: boolean;
   language: "en" | "no";
-  shademap_available: boolean;
   mfa_enabled: boolean;
   mfa_setup_required: boolean;
   mfa_authenticated: boolean;
@@ -787,19 +786,6 @@ export interface GardenSettings {
   longitude: number | null;
   address: string;
   onboarding_complete: boolean;
-}
-
-export interface GardenLidarStatus {
-  garden_id: number;
-  available: boolean;
-  uploaded: boolean;
-  filename: string;
-  uploaded_filename: string;
-  bytes: number;
-  uploaded_bytes: number;
-  updated_at_ms: number | null;
-  source: string;
-  max_upload_bytes: number;
 }
 
 export interface GardenGeocodeResult {
@@ -1244,8 +1230,7 @@ export type ProviderSecretStatus = {
 
 export type ProviderSecretKey =
   | "openai_api_key"
-  | "plantnet_api_key"
-  | "shademap_api_key";
+  | "plantnet_api_key";
 
 export interface ProviderSettings {
   ai_provider: "disabled" | "openai";
@@ -1263,10 +1248,8 @@ export interface ProviderSettingsUpdate {
   openai_fast_model?: string;
   openai_api_key?: string;
   plantnet_api_key?: string;
-  shademap_api_key?: string;
   clear_openai_api_key?: boolean;
   clear_plantnet_api_key?: boolean;
-  clear_shademap_api_key?: boolean;
   action_reason: string;
 }
 
@@ -1786,201 +1769,11 @@ export interface LayoutExportPlot {
 export interface LayoutExport {
   plots: LayoutExportPlot[];
   house?: HouseLayoutState;
-  shademap?: PersistedShadeMapState;
-  shademap_calibration?: ShadeMapCalibration;
-  shademap_obstacles?: ShadeMapObstacle[];
   map_objects?: MapObject[];
-}
-
-export type ShadeMapMode = "shadow" | "sun-hours";
-export type ShadeMapPreset = "now" | "custom" | "spring" | "summer" | "autumn" | "winter";
-export type ShadeMapFeature = Record<string, unknown>;
-
-export interface ShadeMapConfig {
-  api_key: string;
-  basemap_url_template: string;
-  latitude: number;
-  longitude: number;
-  zoom: number;
-  label: string;
-  share_url: string;
-  terrain_url_template: string;
-  terrain_token_expires_at_ms: number;
-  terrain_max_zoom: number;
-  terrain_tile_size: number;
-  features_min_zoom: number;
-  provider_state: "ready" | "degraded";
-  sdk_cache_status: "hit" | "miss" | "stale-fallback";
-  runtime_script_url: string | null;
-}
-
-export interface PersistedShadeMapState {
-  mode: ShadeMapMode;
-  selected_plot_id: string | null;
-  analysis_timestamp_ms: number;
-  preset: ShadeMapPreset;
-}
-
-export interface ShadeMapCalibration {
-  enabled: boolean;
-  calibration_type: "two-point" | "house-corners";
-  origin_grid_col: number | null;
-  origin_grid_row: number | null;
-  origin_latitude: number | null;
-  origin_longitude: number | null;
-  axis_grid_col: number | null;
-  axis_grid_row: number | null;
-  axis_latitude: number | null;
-  axis_longitude: number | null;
-  house_nw_latitude: number | null;
-  house_nw_longitude: number | null;
-  house_ne_latitude: number | null;
-  house_ne_longitude: number | null;
-  house_se_latitude: number | null;
-  house_se_longitude: number | null;
-  house_sw_latitude: number | null;
-  house_sw_longitude: number | null;
-}
-
-export type ShadeMapObstacleKind = "tree" | "structure";
-
-export interface ShadeMapObstacle {
-  id: number;
-  label: string;
-  kind: ShadeMapObstacleKind;
-  linked_plot_id: string | null;
-  latitude: number;
-  longitude: number;
-  height_m: number;
-  crown_radius_m: number;
-  active: boolean;
-}
-
-export type ShadeMapObstacleInput = Omit<ShadeMapObstacle, "id">;
-
-export interface ShadeMapMonthlyEstimateValue {
-  month: number;
-  month_label: string;
-  hours: number;
-  sample_days: number;
-}
-
-export interface ShadeMapMonthlyEstimate {
-  source_name: string;
-  source_date_start: string;
-  source_date_end: string;
-  values: ShadeMapMonthlyEstimateValue[];
 }
 
 export async function getLayoutStateApi(): Promise<HouseLayoutState> {
   return apiGet<HouseLayoutState>("/api/layout-state");
-}
-
-export async function getShadeMapConfigApi(): Promise<ShadeMapConfig> {
-  return apiGet<ShadeMapConfig>("/api/shademap/config");
-}
-
-export async function getShadeMapFeaturesApi(params: {
-  north: number;
-  south: number;
-  east: number;
-  west: number;
-  zoom: number;
-}): Promise<ShadeMapFeature[]> {
-  const query = new URLSearchParams({
-    north: String(params.north),
-    south: String(params.south),
-    east: String(params.east),
-    west: String(params.west),
-    zoom: String(params.zoom),
-  });
-  const body = await apiGet<{ features?: ShadeMapFeature[] }>(
-    `/api/shademap/features?${query.toString()}`,
-  );
-  return Array.isArray(body.features) ? body.features : [];
-}
-
-export function buildShadeMapTerrainUrl(
-  template: string,
-  params: { z: number; x: number; y: number },
-): string {
-  return template
-    .replace("{z}", String(params.z))
-    .replace("{x}", String(params.x))
-    .replace("{y}", String(params.y));
-}
-
-export async function getShadeMapStateApi(): Promise<PersistedShadeMapState> {
-  return apiGet<PersistedShadeMapState>("/api/shademap/state");
-}
-
-export async function getShadeMapCalibrationApi(): Promise<ShadeMapCalibration> {
-  return apiGet<ShadeMapCalibration>("/api/shademap/calibration");
-}
-
-export async function updateShadeMapCalibrationApi(
-  calibration: ShadeMapCalibration,
-): Promise<ShadeMapCalibration> {
-  return apiPatch<ShadeMapCalibration>(
-    "/api/shademap/calibration",
-    calibration,
-  );
-}
-
-export async function listShadeMapObstaclesApi(): Promise<ShadeMapObstacle[]> {
-  return apiGet<ShadeMapObstacle[]>("/api/shademap/obstacles");
-}
-
-export async function createShadeMapObstacleApi(
-  obstacle: ShadeMapObstacleInput,
-): Promise<ShadeMapObstacle> {
-  return apiPost<ShadeMapObstacle>("/api/shademap/obstacles", obstacle);
-}
-
-export async function updateShadeMapObstacleApi(
-  obstacleId: number,
-  obstacle: ShadeMapObstacleInput,
-): Promise<ShadeMapObstacle> {
-  return apiPatch<ShadeMapObstacle>(
-    `/api/shademap/obstacles/${obstacleId}`,
-    obstacle,
-  );
-}
-
-export async function deleteShadeMapObstacleApi(
-  obstacleId: number,
-): Promise<void> {
-  await apiDelete<unknown>(`/api/shademap/obstacles/${obstacleId}`);
-}
-
-export async function updateShadeMapStateApi(
-  state: PersistedShadeMapState,
-): Promise<void> {
-  await apiPatch<unknown>("/api/shademap/state", state);
-}
-
-export async function getShadeMapMonthlyEstimatedSunApi(): Promise<ShadeMapMonthlyEstimate> {
-  return apiGet<ShadeMapMonthlyEstimate>(
-    "/api/shademap/monthly-estimated-sun",
-  );
-}
-
-export interface SunWindow {
-  sol_opp: string | null;
-  sol_ned: string | null;
-}
-
-export async function getSunWindowApi(
-  month: number,
-  day: number,
-): Promise<SunWindow> {
-  const query = new URLSearchParams({
-    month: String(month),
-    day: String(day),
-  });
-  return apiGet<SunWindow>(
-    `/api/shademap/sun-window?${query.toString()}`,
-  );
 }
 
 export async function updateLayoutStateApi(
@@ -2380,27 +2173,6 @@ export async function importPlantsCsvApi(csvText: string): Promise<{
   );
 }
 
-export interface PlotElevations {
-  available: boolean;
-  elevations: Record<string, number>;
-  overrides: Record<string, number>;
-  min_m: number | null;
-  max_m: number | null;
-}
-
-export async function getPlotElevationsApi(): Promise<PlotElevations> {
-  return apiGet<PlotElevations>("/api/plots/elevations");
-}
-
-export async function updatePlotElevationsApi(
-  overrides: Record<string, number | null>,
-): Promise<PlotElevations> {
-  return apiPatch<PlotElevations>(
-    "/api/plots/elevations",
-    { overrides },
-  );
-}
-
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -2511,38 +2283,6 @@ export async function geocodeGardenLocationApi(
     `/api/gardens/${gardenId}/geocode?${params.toString()}`,
   );
   return Array.isArray(response.results) ? response.results : [];
-}
-
-export async function getGardenLidarApi(
-  gardenId: number,
-): Promise<GardenLidarStatus> {
-  return apiGet<GardenLidarStatus>(`/api/gardens/${gardenId}/lidar`);
-}
-
-export async function uploadGardenLidarApi(options: {
-  gardenId: number;
-  file: File;
-  onProgress?: (pct: number) => void;
-}): Promise<GardenLidarStatus> {
-  const uploadOptions: { onProgress?: (pct: number) => void; gardenId: number } = {
-    gardenId: options.gardenId,
-  };
-  if (options.onProgress) uploadOptions.onProgress = options.onProgress;
-  return uploadBinary<GardenLidarStatus>(
-    `/api/gardens/${options.gardenId}/lidar`,
-    options.file,
-    {
-      "content-type": options.file.type || "application/octet-stream",
-      "x-upload-filename": options.file.name || "terrain.laz",
-    },
-    uploadOptions,
-  );
-}
-
-export async function deleteGardenLidarApi(
-  gardenId: number,
-): Promise<GardenLidarStatus> {
-  return apiDelete<GardenLidarStatus>(`/api/gardens/${gardenId}/lidar`);
 }
 
 export async function createZoneApi(

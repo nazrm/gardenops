@@ -215,10 +215,6 @@ interface RenderMapParams {
   gridCols: number;
   selectedPlotIds: Set<string>;
   highlightedPlotIds: Set<string>;
-  sunlitPlotIds: Set<string>;
-  elevationData: Record<string, number> | null;
-  elevationRange: { min: number; max: number } | null;
-  showElevation: boolean;
   editMode: boolean;
   housePosition: { row: number; col: number };
   houseSize: { width: number; height: number };
@@ -275,10 +271,6 @@ export function renderMapGrid(params: RenderMapParams): void {
     plots,
     selectedPlotIds,
     highlightedPlotIds,
-    sunlitPlotIds,
-    elevationData,
-    elevationRange,
-    showElevation,
     editMode,
     housePosition,
     houseSize,
@@ -342,8 +334,7 @@ export function renderMapGrid(params: RenderMapParams): void {
         fragment.appendChild(
           buildPlotCell(
             plot, row, col, editMode,
-            selectedPlotIds, highlightedPlotIds, sunlitPlotIds,
-            showElevation, elevationData, elevationRange,
+            selectedPlotIds, highlightedPlotIds,
           ),
         );
       } else if (editMode) {
@@ -588,10 +579,6 @@ function buildPlotCell(
   editMode: boolean,
   selectedPlotIds: Set<string>,
   highlightedPlotIds: Set<string>,
-  sunlitPlotIds: Set<string>,
-  showElevation: boolean,
-  elevationData: Record<string, number> | null,
-  elevationRange: { min: number; max: number } | null,
 ): HTMLElement {
   const el = document.createElement("div");
   el.className = "plot";
@@ -636,22 +623,8 @@ function buildPlotCell(
   el.title = t("map.plot_tooltip", { zone: plot.zone_name, number: plot.plot_number, count: plot.plant_count });
   el.draggable = editMode;
 
-  let elevActive = false;
-  if (showElevation && elevationData && elevationRange) {
-    const elev = elevationData[plot.plot_id];
-    if (elev !== undefined) {
-      const span = elevationRange.max - elevationRange.min;
-      const ratio = span > 0 ? (elev - elevationRange.min) / span : 0.5;
-      const hue = Math.round(240 * (1 - ratio));
-      el.classList.add("elevation-overlay");
-      el.style.setProperty("--elev-hue", String(hue));
-      el.title += ` · ${t("map.elevation_value", { value: elev.toFixed(1) })}`;
-      elevActive = true;
-    }
-  }
-
   const plotColor = safePlotColor(plot.color);
-  if (!elevActive && plotColor) {
+  if (plotColor) {
     el.style.background = plotColor;
   }
   if (selectedPlotIds.has(plot.plot_id)) {
@@ -659,10 +632,6 @@ function buildPlotCell(
   }
   if (highlightedPlotIds.has(plot.plot_id)) {
     el.classList.add("highlighted");
-  }
-  if (sunlitPlotIds.has(plot.plot_id)) {
-    el.classList.add("sunlit-direct");
-    el.dataset["sunlight"] = "sun";
   }
 
   return el;

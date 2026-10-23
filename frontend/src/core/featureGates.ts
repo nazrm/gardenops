@@ -40,14 +40,14 @@ const TIER_FEATURES: Record<string, readonly string[]> = {
   enthusiast: [
     "map", "plots", "plants", "journal", "harvest_basic",
     "onboarding", "media", "theme", "snapshots", "exports_basic",
-    "tasks", "issues", "weather", "notifications", "shade_map",
+    "tasks", "issues", "weather", "notifications",
     "planner", "saved_views", "statistics", "inventory", "care", "calendar",
     "calendar_subscriptions", "exports_full",
   ],
   pro: [
     "map", "plots", "plants", "journal", "harvest_basic",
     "onboarding", "media", "theme", "snapshots", "exports_basic",
-    "tasks", "issues", "weather", "notifications", "shade_map",
+    "tasks", "issues", "weather", "notifications",
     "planner", "saved_views", "statistics", "inventory", "care", "calendar",
     "calendar_subscriptions", "exports_full",
     "multi_garden", "user_management", "mfa", "procurement", "workflows",

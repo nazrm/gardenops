@@ -14,7 +14,6 @@ from gardenops.models import StrictBaseModel
 from gardenops.platform_secrets import (
     OPENAI_API_KEY,
     PLANTNET_API_KEY,
-    SHADEMAP_API_KEY,
     ConfigurationError,
 )
 from gardenops.provider_settings import (
@@ -37,17 +36,14 @@ class ProviderSettingsUpdateBody(StrictBaseModel):
     openai_fast_model: str | None = Field(default=None, max_length=120)
     openai_api_key: str | None = Field(default=None, max_length=500)
     plantnet_api_key: str | None = Field(default=None, max_length=500)
-    shademap_api_key: str | None = Field(default=None, max_length=500)
     clear_openai_api_key: bool = False
     clear_plantnet_api_key: bool = False
-    clear_shademap_api_key: bool = False
     action_reason: str = Field(default="", max_length=400)
 
 
 _SECRET_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("openai_api_key", "clear_openai_api_key", OPENAI_API_KEY),
     ("plantnet_api_key", "clear_plantnet_api_key", PLANTNET_API_KEY),
-    ("shademap_api_key", "clear_shademap_api_key", SHADEMAP_API_KEY),
 )
 
 

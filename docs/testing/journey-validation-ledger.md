@@ -5,6 +5,11 @@ This ledger records durable completion evidence for the phased journey program i
 Raw traces, screenshots, timings, and reviewer work products remain under the
 gitignored `research/optimization-map/` tree.
 
+The entries below are historical evidence for their recorded revisions.
+Sun/shade analysis and LiDAR uploads have since been removed, so the current
+coverage manifest excludes M5 and C6. Phase 7 now covers providers and weather;
+its retired shade/terrain proofs are not claims about the current application.
+
 | Phase | PR | Final head | Focused validation | Cumulative validation | Independent reviewer | Disposition | Limitations |
 |---:|---|---|---|---|---|---|---|
 | 0 | [#101](https://github.com/nazrm/gardenops/pull/101) | `dc27b9069362205538b325562bd5e6075dd01086` | 43 focused tests passed through disposable PostgreSQL | Clean desktop and Pixel 7 cumulative Playwright run passed | Route `gpt-5.6-sol`, `ultra`, priority; visible identity Codex/GPT-5 family | PASS WITH DOCUMENTED LIMITATIONS | Delayed stale-response and broader-role proof remain Phase 1; full accessible-name and interaction enforcement remains Phase 8 |

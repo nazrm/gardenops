@@ -11,7 +11,6 @@ deploying, and contributing to GardenOps.
 | Dependency security policy | [dependency-security-policy.md](dependency-security-policy.md) |
 | Map objects and nested layouts | [map-objects.md](map-objects.md) |
 | Contextual recording, history and planning | [garden-experience.md](garden-experience.md) |
-| ShadeMap sun/shade integration | [shademap.md](shademap.md) |
 | Production deployment | [deployment.md](deployment.md) |
 | Development and PR checks | [development.md](development.md) |
 | PR review workflow | [pr-review-runbook.md](pr-review-runbook.md) |

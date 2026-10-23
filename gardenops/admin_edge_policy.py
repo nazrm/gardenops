@@ -380,27 +380,6 @@ ADMIN_EDGE_GENERIC_ROUTE_EXCEPTIONS: Final[tuple[AdminEdgeRouteDecision, ...]] =
         rationale="Garden geocoding is editor-scoped and app-rate-limited.",
     ),
     AdminEdgeRouteDecision(
-        method="GET",
-        path_template="/api/gardens/{garden_id}/lidar",
-        decision="generic_api",
-        rationale="Garden LIDAR status reads are garden-scoped rather than platform-admin.",
-    ),
-    AdminEdgeRouteDecision(
-        method="POST",
-        path_template="/api/gardens/{garden_id}/lidar",
-        decision="generic_api",
-        rationale=(
-            "Garden LIDAR uploads rely on editor authorization and a dedicated "
-            "upload edge body limit rather than the admin edge buckets."
-        ),
-    ),
-    AdminEdgeRouteDecision(
-        method="DELETE",
-        path_template="/api/gardens/{garden_id}/lidar",
-        decision="generic_api",
-        rationale="Garden LIDAR removal is scoped to editors of the selected garden.",
-    ),
-    AdminEdgeRouteDecision(
         method="POST",
         path_template="/api/gardens/{garden_id}/zones",
         decision="generic_api",

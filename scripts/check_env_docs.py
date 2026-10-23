@@ -23,7 +23,7 @@ JS_ENV_BRACKET_RE = re.compile(
     r"(?:process\.env|import\.meta\.env)\[\s*['\"]([A-Z][A-Z0-9_]*)['\"]\s*\]"
 )
 JS_ENV_DESTRUCTURE_RE = re.compile(r"\{(?P<names>[^}]+)\}\s*=\s*(?:process\.env|import\.meta\.env)")
-EXACT_ENV_NAMES = {"SHADEMAP"}
+EXACT_ENV_NAMES: set[str] = set()
 IGNORED_ENV_NAMES = {"CURRENT_DATE", "HOSTNAME"}
 RATE_LIMIT_BUCKET_PLACEHOLDER = "RATE_LIMIT_GLOBAL_LIMIT_<BUCKET>"
 

@@ -73,24 +73,6 @@ _PROVIDER_LIMIT_PROFILES: dict[str, dict[str, object]] = {
         "concurrency_limit_env": "AI_DIAGNOSE_CONCURRENCY_LIMIT",
         "concurrency_limit_default": 2,
     },
-    "shademap-features-miss": {
-        "label": "ShadeMap features miss",
-        "user_limit_env": "SHADEMAP_FEATURES_MISS_DAILY_BUDGET_USER",
-        "user_limit_default": 180,
-        "garden_limit_env": "SHADEMAP_FEATURES_MISS_DAILY_BUDGET_GARDEN",
-        "garden_limit_default": 420,
-        "concurrency_limit_env": "SHADEMAP_FEATURES_MISS_CONCURRENCY_LIMIT",
-        "concurrency_limit_default": 4,
-    },
-    "shademap-terrain-miss": {
-        "label": "ShadeMap terrain miss",
-        "user_limit_env": "SHADEMAP_TERRAIN_MISS_DAILY_BUDGET_USER",
-        "user_limit_default": 900,
-        "garden_limit_env": "SHADEMAP_TERRAIN_MISS_DAILY_BUDGET_GARDEN",
-        "garden_limit_default": 2400,
-        "concurrency_limit_env": "SHADEMAP_TERRAIN_MISS_CONCURRENCY_LIMIT",
-        "concurrency_limit_default": 8,
-    },
 }
 
 

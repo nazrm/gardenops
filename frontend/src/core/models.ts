@@ -894,7 +894,6 @@ export interface AppState {
   plantsCache: Plant[];
   selectedPlotId: string | null;
   selectedPlotIds: Set<string>;
-  sunlitPlotIds: Set<string>;
   editMode: boolean;
   housePosition: { row: number; col: number };
   houseSize: { width: number; height: number };

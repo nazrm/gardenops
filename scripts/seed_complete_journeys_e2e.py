@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
@@ -15,18 +14,10 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-import laspy
-import numpy as np
 from psycopg import sql
-from pyproj import CRS, Transformer
 
 from gardenops.db import close_pool, current_timestamp_ms, executemany, get_db, return_db
 from gardenops.routers.map_objects import snapshot_map_objects
-from gardenops.routers.shademap import (
-    get_shademap_calibration,
-    get_shademap_state,
-    list_shademap_obstacles,
-)
 from gardenops.security import generate_passkey_user_handle, hash_password
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -1937,9 +1928,6 @@ def _snapshot_payload_projection(
             for plot in graph["plots"]
         ],
         "schema_version": 2,
-        "shademap": get_shademap_state(conn, garden_id=garden_id),
-        "shademap_calibration": get_shademap_calibration(conn, garden_id=garden_id),
-        "shademap_obstacles": list_shademap_obstacles(conn, garden_id=garden_id),
     }
 
 
@@ -2358,17 +2346,6 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (alpha_id, PHASE_ONE_MAP_UNIT_ID),
     ).fetchone()
-    terrain_provider_usage_rows = conn.execute(
-        """
-        SELECT usage.usage_day, usage.feature, usage.scope_type, usage.scope_id,
-               usage.request_count, users.username AS scope_username
-        FROM provider_daily_usage usage
-        LEFT JOIN auth_users users
-          ON usage.scope_type = 'user' AND users.id = usage.scope_id
-        WHERE usage.feature = 'shademap-terrain-miss'
-        ORDER BY usage.usage_day, usage.scope_type, usage.scope_id
-        """
-    ).fetchall()
     indoor = conn.execute(
         """
         SELECT
@@ -2844,17 +2821,6 @@ def _phase_one_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         "temp_map_object_count": int(counts["temp_map_objects"]),
         "temp_plant_count": int(counts["temp_plants"]),
         "temp_saved_view_count": int(counts["temp_views"]),
-        "terrain_provider_usage": [
-            {
-                "feature": str(row["feature"]),
-                "request_count": int(row["request_count"]),
-                "scope_id": int(row["scope_id"]),
-                "scope_type": str(row["scope_type"]),
-                "scope_username": str(row["scope_username"] or ""),
-                "usage_day": str(row["usage_day"]),
-            }
-            for row in terrain_provider_usage_rows
-        ],
     }
 
 
@@ -4445,7 +4411,6 @@ def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         ).fetchall()
     }
     alpha_id = gardens[optimization_seed.GARDEN_A_SLUG]
-    beta_id = gardens[optimization_seed.GARDEN_B_SLUG]
     usage_rows = conn.execute(
         """
         SELECT usage.feature, usage.scope_type, usage.scope_id, usage.request_count,
@@ -4495,24 +4460,16 @@ def _phase_seven_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             [
                 "openai_api_key",
                 "plantnet_api_key",
-                "shademap_api_key",
             ],
         ),
     ).fetchall()
     return {
         "alpha": {
-            "calibration": get_shademap_calibration(conn, garden_id=alpha_id),
-            "obstacles": list_shademap_obstacles(conn, garden_id=alpha_id),
-            "state": get_shademap_state(conn, garden_id=alpha_id),
             # A location edit can legitimately invalidate this cache. Phase 7
             # prepares it explicitly before its browser journey begins.
             "weather": weather,
         },
-        "beta": {
-            "calibration": get_shademap_calibration(conn, garden_id=beta_id),
-            "obstacles": list_shademap_obstacles(conn, garden_id=beta_id),
-            "state": get_shademap_state(conn, garden_id=beta_id),
-        },
+        "beta": {},
         "provider_usage": [
             {
                 "feature": str(row["feature"]),
@@ -5820,108 +5777,6 @@ def _write_json_exclusive(output_path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def _write_phase_seven_terrain_fixture() -> Path:
-    """Create a small, CRS-bearing LAS input inside the private runner artifact directory."""
-    artifact_raw = os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR", "")
-    if not artifact_raw:
-        raise RuntimeError("Complete journey artifact directory is required")
-    artifact_dir = Path(artifact_raw).resolve(strict=True)
-    if not artifact_dir.is_dir() or artifact_dir.is_symlink():
-        raise RuntimeError("Complete journey artifact directory is unsafe")
-    terrain = PHASE_SEVEN_ORACLE["phase_seven"]["fixture"]["terrain"]
-    filename = str(terrain["filename"])
-    if filename != "phase-seven-terrain.las":
-        raise RuntimeError("Phase 7 terrain fixture filename is invalid")
-    output_path = artifact_dir / filename
-    if output_path.parent != artifact_dir or output_path.exists() or output_path.is_symlink():
-        raise RuntimeError("Phase 7 terrain fixture path is unsafe")
-
-    crs = CRS.from_user_input(str(terrain["crs"]))
-    longitude = float(terrain["longitude"])
-    latitude = float(terrain["latitude"])
-    x0, y0 = Transformer.from_crs(4326, crs, always_xy=True).transform(longitude, latitude)
-    elevations = np.asarray(terrain["elevations_m"], dtype=np.float64)
-    if elevations.shape != (int(terrain["point_count"]),):
-        raise RuntimeError("Phase 7 terrain fixture point count is invalid")
-    extent_m = float(terrain["extent_m"])
-    if not 100.0 <= extent_m <= 500.0:
-        raise RuntimeError("Phase 7 terrain fixture extent is invalid")
-    offsets = np.asarray(
-        (
-            (-extent_m, -extent_m),
-            (extent_m, -extent_m),
-            (-extent_m, extent_m),
-            (extent_m, extent_m),
-        ),
-    )
-    if len(offsets) != len(elevations):
-        raise RuntimeError("Phase 7 terrain fixture geometry is invalid")
-    header = laspy.LasHeader(point_format=3, version="1.2")
-    header.add_crs(crs)
-    header.creation_date = date(2026, 7, 12)
-    dataset = laspy.LasData(header)
-    dataset.x = x0 + offsets[:, 0]
-    dataset.y = y0 + offsets[:, 1]
-    dataset.z = elevations
-    dataset.classification = np.full(len(elevations), 2, dtype=np.uint8)
-    buffer = io.BytesIO()
-    dataset.write(buffer, do_compress=False)
-    payload = buffer.getvalue()
-    if not payload:
-        raise RuntimeError("Phase 7 terrain fixture was empty")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(output_path, flags, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except Exception:
-        output_path.unlink(missing_ok=True)
-        raise
-    return output_path
-
-
-def _write_phase_seven_estimated_sun_fixture() -> Path:
-    """Write the small sun-data input used by the Phase 7 browser journey."""
-    artifact_raw = os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR", "")
-    if not artifact_raw:
-        raise RuntimeError("Complete journey artifact directory is required")
-    artifact_dir = Path(artifact_raw).resolve(strict=True)
-    if not artifact_dir.is_dir() or artifact_dir.is_symlink():
-        raise RuntimeError("Complete journey artifact directory is unsafe")
-    fixture = PHASE_SEVEN_ORACLE["phase_seven"]["fixture"]
-    filename = str(fixture.get("estimated_sun_csv_filename", ""))
-    if filename != "phase-seven-sun.csv":
-        raise RuntimeError("Phase 7 estimated sun fixture filename is invalid")
-    output_path = artifact_dir / filename
-    if output_path.parent != artifact_dir or output_path.exists() or output_path.is_symlink():
-        raise RuntimeError("Phase 7 estimated sun fixture path is unsafe")
-    payload = "\n".join(
-        (
-            "dag;dato;sol_opp;sol_ned;timer_sol;estimert;kommentar",
-            "1;2026-07-12;04:00;22:00;18,00;TRUE;phase-seven-fixture",
-            "2;2026-07-16;04:03;21:57;17,90;TRUE;phase-seven-fixture",
-            "",
-        ),
-    ).encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(output_path, flags, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except Exception:
-        output_path.unlink(missing_ok=True)
-        raise
-    return output_path
-
-
 def _phase_two_maintenance_semantic_rows(conn, garden_id: int) -> dict[str, list[dict[str, Any]]]:
     """Capture the full semantic rows maintenance may create or alter for one garden."""
     task_rows = conn.execute(
@@ -6493,8 +6348,6 @@ def main() -> None:
                 )
                 _seed_phase_two_fixtures(conn, optimization_seed)
                 conn.commit()
-                _write_phase_seven_terrain_fixture()
-                _write_phase_seven_estimated_sun_fixture()
             result = _snapshot(conn, optimization_seed)
             if output_path is not None:
                 _write_json_exclusive(output_path, result)

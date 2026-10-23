@@ -106,8 +106,8 @@ account has one active recovery path.
 ## Optional Providers
 
 Provider keys are optional. Leave them unset to disable the associated feature.
-Platform admins can also set OpenAI, PlantNet, and server-side
-ShadeMap keys from the admin UI. Admin-managed keys are encrypted in
+Platform admins can also set OpenAI and PlantNet keys from the admin UI.
+Admin-managed keys are encrypted in
 `app_secrets` and require `APP_SECRETS_ENCRYPTION_KEY`; environment variables
 remain fallback values.
 
@@ -116,7 +116,6 @@ remain fallback values.
 | AI assistant features | `AI_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 | Plant identification | `PLANTNET_API_KEY` |
 | Weather | `WEATHER_API_KEY` |
-| ShadeMap | `SHADEMAP`, `SHADEMAP_PUBLIC_API_KEY`, `SHADEMAP_TILE_SIGNING_SECRET` |
 
 `AI_PROVIDER` accepts `disabled` or `openai`. Leave it unset or
 set it explicitly to `disabled` to disable LLM-backed AI features. Plant
@@ -154,38 +153,6 @@ Generate `APP_SECRETS_ENCRYPTION_KEY` with:
 Keep this value stable and private. Losing it makes encrypted database-managed
 provider keys unrecoverable; re-enter the keys from the admin UI after replacing
 the storage key.
-
-## ShadeMap Configuration
-
-ShadeMap has a dedicated guide at [shademap.md](shademap.md). It is a paid
-third-party service, not something GardenOps includes. Obtain your own API
-access from [https://shademap.app/about](https://shademap.app/about), then
-configure both the server-side key and browser-safe client key required by your
-ShadeMap account.
-
-At minimum for an enabled production ShadeMap panel, configure:
-
-```bash
-SHADEMAP=change-me
-SHADEMAP_PUBLIC_API_KEY=change-me
-SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
-```
-
-For a hard-disabled deployment, set `SHADEMAP_ENABLED=false`. This hides the
-panel and rejects all ShadeMap API, runtime-script, feature, and terrain routes
-before any provider URL or key is resolved. Set `VITE_SHADEMAP_ENABLED=false`
-when building that deployment as defense in depth so the browser cannot
-initialize the panel or its external basemap even if the server is later
-misconfigured. Leaving keys unset alone keeps provider access unavailable, but
-is not the hard-disable contract.
-
-Server-side ShadeMap keys are platform-admin-only and are no longer stored per
-user. Do not set only the tile signing secret and assume the provider
-integration is active; GardenOps still needs valid ShadeMap access.
-
-Set `SHADEMAP_SHARE_URL`, `SHADEMAP_LAT`, `SHADEMAP_LNG`, and `SHADEMAP_ZOOM`
-to your own garden area. Do not publish exact private coordinates unless that is
-intentional for your deployment.
 
 ## Secret Rules
 

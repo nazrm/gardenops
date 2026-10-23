@@ -1408,7 +1408,6 @@ function buildAuthPerformanceData(large) {
     auth_type: "session",
     write_access: true,
     language: "en",
-    shademap_available: false,
     mfa_enabled: false,
     mfa_setup_required: false,
     mfa_authenticated: true,
@@ -1670,13 +1669,6 @@ async function installScenarioRoutes(context, scenario) {
       }],
       ["/api/plots", fixture.plots],
       ["/api/layout-state", fixture.layoutState],
-      ["/api/plots/elevations", {
-        available: false,
-        elevations: {},
-        overrides: {},
-        min_m: null,
-        max_m: null,
-      }],
       ["/api/plots/alerts", {
         alerts: [],
         plot_ids: [],

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from gardenops.models import ImportBody, LayoutExportBody, ShadeMapObstacleBody, SnapshotBody
+from gardenops.models import ImportBody, LayoutExportBody, SnapshotBody
 from gardenops.routers.auth import AdminCreateUserBody
 from gardenops.routers.calendar import CreateCalendarSubscriptionBody
 from gardenops.routers.media import CreateMediaLinkBody
@@ -61,37 +61,7 @@ class TestStrictRequestModels(unittest.TestCase):
             },
         )
 
-    def test_direct_shademap_obstacle_rejects_export_id(self) -> None:
-        with self.assertRaises(ValidationError) as ctx:
-            ShadeMapObstacleBody.model_validate(
-                {
-                    "id": 42,
-                    "label": "Cherry tree",
-                    "kind": "tree",
-                    "latitude": 60.38,
-                    "longitude": 5.27,
-                    "height_m": 4.9,
-                    "crown_radius_m": 1.9,
-                    "active": True,
-                },
-            )
-        self.assertIn("Extra inputs are not permitted", str(ctx.exception))
-
-    def test_direct_shademap_obstacle_rejects_other_extra_fields(self) -> None:
-        self.assert_rejects_extra(
-            ShadeMapObstacleBody,
-            {
-                "label": "Cherry tree",
-                "kind": "tree",
-                "latitude": 60.38,
-                "longitude": 5.27,
-                "height_m": 4.9,
-                "crown_radius_m": 1.9,
-                "active": True,
-            },
-        )
-
-    def test_layout_import_accepts_exported_obstacle_id(self) -> None:
+    def test_layout_import_ignores_retired_obstacles(self) -> None:
         body = ImportBody.model_validate(
             {
                 "plots": [
@@ -118,7 +88,7 @@ class TestStrictRequestModels(unittest.TestCase):
                 ],
             },
         )
-        self.assertEqual(body.shademap_obstacles[0].id, 42)
+        self.assertNotIn("shademap_obstacles", body.model_dump())
 
     def test_onboarding_layout_import_reuses_plot_count_limit(self) -> None:
         plot = {
@@ -132,32 +102,4 @@ class TestStrictRequestModels(unittest.TestCase):
         with self.assertRaises(ValidationError):
             LayoutExportBody.model_validate(
                 {"plots": [plot | {"plot_id": f"A{i}"} for i in range(1001)]}
-            )
-
-    def test_onboarding_layout_import_reuses_obstacle_count_limit(self) -> None:
-        plot = {
-            "plot_id": "A1",
-            "zone_code": "A",
-            "zone_name": "Alpha",
-            "plot_number": 1,
-            "grid_row": 1,
-            "grid_col": 1,
-        }
-        obstacle = {
-            "label": "Cherry tree",
-            "kind": "tree",
-            "latitude": 60.38,
-            "longitude": 5.27,
-            "height_m": 4.9,
-            "crown_radius_m": 1.9,
-            "active": True,
-        }
-        with self.assertRaises(ValidationError):
-            LayoutExportBody.model_validate(
-                {
-                    "plots": [plot],
-                    "shademap_obstacles": [
-                        obstacle | {"label": f"Obstacle {i}"} for i in range(501)
-                    ],
-                },
             )

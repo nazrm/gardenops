@@ -17,7 +17,6 @@ import type {
   AuthUserProfile,
   GardenMembership,
   GardenSettings,
-  GardenLidarStatus,
   GardenInvitation,
   GardenSummary,
   MeSettings,
@@ -52,7 +51,6 @@ import {
   getGardenInvitationsApi,
   geocodeGardenLocationApi,
   createGardenInvitationApi,
-  deleteGardenLidarApi,
   deleteGardenApi,
   deleteGardenMembershipApi,
   getAdminSystemHealthApi,
@@ -67,7 +65,6 @@ import {
   revokeUserSessionsByIdApi,
   setEmergencyReadOnlyApi,
   getGardenSettingsApi,
-  getGardenLidarApi,
   getMissingPlantCoversApi,
   getPasskeysApi,
   getProviderSettingsApi,
@@ -75,7 +72,6 @@ import {
   updateAuthMeSettingsApi,
   updateGardenSettingsApi,
   upsertGardenMembershipApi,
-  uploadGardenLidarApi,
   updateAuthUserApi,
   updateProviderSettingsApi,
   updateUserTierApi,
@@ -131,9 +127,6 @@ interface AdminState {
   passkeysEnabled: boolean;
   providerSettings: ProviderSettings | null;
   gardenSettings: GardenSettings | null;
-  gardenLidarStatus: GardenLidarStatus | null;
-  gardenLidarUploading: boolean;
-  gardenLidarProgress: number;
   mfaEnrollment: {
     secret: string;
     provisioning_uri: string;
@@ -185,9 +178,6 @@ const state: AdminState = {
   passkeysEnabled: false,
   providerSettings: null,
   gardenSettings: null,
-  gardenLidarStatus: null,
-  gardenLidarUploading: false,
-  gardenLidarProgress: 0,
   mfaEnrollment: null,
   latestRecoveryCodes: [],
   identityNotice: null,
@@ -360,10 +350,7 @@ function formatMissingCoverReason(item: MissingPlantCoverReportItem): string {
 
 function formatSecurityAlertName(name: string): string {
   switch (name) {
-    case "shademap_features_cache_miss_spike_5m":
-      return t("admin_panel.alert_shademap_feature_miss");
-    case "shademap_terrain_remote_miss_spike_5m":
-      return t("admin_panel.alert_shademap_terrain_miss");
+
     case "destructive_admin_actions_per_5m":
       return t("admin_panel.alert_destructive_admin");
     case "auth_failures_per_minute":
@@ -382,8 +369,7 @@ function formatSecurityAlertName(name: string): string {
       return t("admin_panel.alert_concurrency_limit");
     case "ai_provider_failures_per_5m":
       return t("admin_panel.alert_ai_provider_failures");
-    case "shademap_upstream_failures_per_5m":
-      return t("admin_panel.alert_shademap_upstream");
+
     default:
       return name.replaceAll("_", " ");
   }
@@ -647,7 +633,6 @@ async function authorizeSensitiveAdminAction(
 const PROVIDER_SECRET_ROWS: Array<{ key: ProviderSecretKey; labelKey: string }> = [
   { key: "openai_api_key", labelKey: "admin.provider_keys.openai" },
   { key: "plantnet_api_key", labelKey: "admin.provider_keys.plantnet" },
-  { key: "shademap_api_key", labelKey: "admin.provider_keys.shademap" },
 ];
 
 function renderProviderSecretStatus(key: ProviderSecretKey): string {
@@ -1131,36 +1116,7 @@ function renderGardenSection(): string {
       </div>
     `
     : "";
-  const lidarStatus = state.gardenLidarStatus;
-  const lidarProgress = Math.max(0, Math.min(100, state.gardenLidarProgress));
-  const lidarMeta = lidarStatus?.available
-    ? t("admin.garden.lidar_status_ready", {
-      filename: lidarStatus.filename || t("common.na"),
-      size: fmtBytes(lidarStatus.bytes),
-    })
-    : t("admin.garden.lidar_status_empty");
-  const lidarUpdated = lidarStatus?.updated_at_ms
-    ? `<p class="adm-section-desc">${t("admin.garden.lidar_updated", { date: fmtDate(lidarStatus.updated_at_ms) })}</p>`
-    : "";
-  const lidarCard = isFeatureEnabled("shade_map") ? `
-    <div class="adm-card adm-card--form">
-      <h3 class="adm-card-title">${t("admin.garden.lidar_title")}</h3>
-      <p class="adm-section-desc">${t("admin.garden.lidar_desc")}</p>
-      <p class="adm-section-desc">${esc(lidarMeta)}</p>
-      ${lidarUpdated}
-      ${state.gardenLidarUploading ? `
-        <div class="adm-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${lidarProgress}">
-          <div class="adm-progress-fill" style="width:${lidarProgress}%"></div>
-        </div>
-        <p class="adm-section-desc" aria-live="polite">${lidarProgress >= 100 ? t("common.loading") : t("media.upload_progress", { percent: lidarProgress })}</p>
-      ` : ""}
-      <input id="adm-garden-lidar-input" type="file" accept=".las,.laz" hidden />
-      <div class="adm-btn-group">
-        <button type="button" id="adm-garden-lidar-upload" class="adm-btn"${state.gardenLidarUploading ? " disabled" : ""}>${t("admin.garden.lidar_upload")}</button>
-        <button type="button" id="adm-garden-lidar-remove" class="adm-btn adm-btn--ghost"${lidarStatus?.uploaded && !state.gardenLidarUploading ? "" : " disabled"}>${t("admin.garden.lidar_remove")}</button>
-      </div>
-    </div>
-  ` : "";
+
   return `
     <div class="adm-section-header">
       <div>
@@ -1194,7 +1150,6 @@ function renderGardenSection(): string {
       </div>
     </div>
     ${mapSetupCard}
-    ${lidarCard}
     <div class="adm-card adm-card--form">
       <h3 class="adm-card-title">${t("admin.garden.onboarding_title")}</h3>
       <p class="adm-section-desc">${t("common.status")}: ${onboardingStatus}</p>
@@ -1808,12 +1763,7 @@ function renderSystemSection(): string {
           <dt>${t("admin_panel.rate_invalid_invites")}</dt><dd>${fmtRate(rates["invalid_invitation_attempts_per_5m"])}</dd>
           <dt>${t("admin_panel.rate_budget_hits")}</dt><dd>${fmtRate(rates["provider_budget_hits_per_5m"])}</dd>
           <dt>${t("admin_panel.rate_concurrency_hits")}</dt><dd>${fmtRate(rates["concurrency_limit_hits_per_5m"])}</dd>
-          <dt>${t("admin_panel.rate_feature_misses")}</dt><dd>${fmtRate(rates["shademap_features_cache_misses_per_5m"])}</dd>
-          <dt>${t("admin_panel.rate_feature_miss_ratio")}</dt><dd>${fmtRate(rates["shademap_features_cache_miss_ratio_pct_5m"])}%</dd>
-          <dt>${t("admin_panel.rate_terrain_misses")}</dt><dd>${fmtRate(rates["shademap_terrain_remote_misses_per_5m"])}</dd>
-          <dt>${t("admin_panel.rate_terrain_miss_ratio")}</dt><dd>${fmtRate(rates["shademap_terrain_remote_miss_ratio_pct_5m"])}%</dd>
           <dt>${t("admin_panel.rate_ai_provider_failures")}</dt><dd>${fmtRate(rates["ai_provider_failures_per_5m"])}</dd>
-          <dt>${t("admin_panel.rate_shademap_failures")}</dt><dd>${fmtRate(rates["shademap_upstream_failures_per_5m"])}</dd>
         </dl>
       </div>
       <div class="adm-card">
@@ -2027,7 +1977,7 @@ async function loadGardenSettings(): Promise<boolean> {
   const ctx = gardenContextFn?.();
   if (!ctx?.activeGardenId || !canEditActiveGarden()) {
     state.gardenSettings = null;
-    state.gardenLidarStatus = null;
+
     state.gardenMemberships = [];
     state.missingPlantCovers = [];
     state.missingPlantCoversTotal = 0;
@@ -2039,19 +1989,14 @@ async function loadGardenSettings(): Promise<boolean> {
     && gardenContextFn?.().activeGardenId === requestGardenId
   );
   try {
-    const [settings, lidarStatus] = await Promise.all([
-      getGardenSettingsApi(requestGardenId),
-      isFeatureEnabled("shade_map")
-        ? getGardenLidarApi(requestGardenId)
-        : Promise.resolve(null),
-    ]);
+    const settings = await getGardenSettingsApi(requestGardenId);
     if (!isCurrentRequest()) return false;
     applyGardenSettingsBaseline(settings);
-    state.gardenLidarStatus = lidarStatus;
+
   } catch (err) {
     if (!isCurrentRequest()) return false;
     state.gardenSettings = null;
-    state.gardenLidarStatus = null;
+
     showToast(getApiErrorMessage(err), "error");
   }
   if (isPlatformAdmin()) {
@@ -2392,61 +2337,6 @@ function wireSection(): void {
       if (longitudeInput) longitudeInput.value = String(first.longitude);
       captureGardenSettingsDraftFromDom();
       showToast(t("admin.garden.geocode_applied"), "success");
-    } catch (err) {
-      showToast(getApiErrorMessage(err), "error");
-    }
-  });
-
-  container.querySelector("#adm-garden-lidar-upload")?.addEventListener("click", () => {
-    queryInput("adm-garden-lidar-input")?.click();
-  });
-  container.querySelector("#adm-garden-lidar-input")?.addEventListener("change", async (event) => {
-    const ctx = gardenContextFn?.();
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0] ?? null;
-    input.value = "";
-    if (!ctx?.activeGardenId || !file) return;
-    if (!/\.(las|laz)$/i.test(file.name)) {
-      showToast(t("admin.garden.lidar_bad_file"), "error");
-      return;
-    }
-    state.gardenLidarUploading = true;
-    state.gardenLidarProgress = 0;
-    repaint();
-    try {
-      state.gardenLidarStatus = await uploadGardenLidarApi({
-        gardenId: ctx.activeGardenId,
-        file,
-        onProgress: (pct) => {
-          state.gardenLidarProgress = pct;
-          repaint();
-        },
-      });
-      state.gardenLidarProgress = 100;
-      await onGardenStateChanged?.();
-      await loadGardenSettings();
-      showToast(t("admin.garden.lidar_uploaded"), "success");
-    } catch (err) {
-      showToast(getApiErrorMessage(err), "error");
-    } finally {
-      state.gardenLidarUploading = false;
-      state.gardenLidarProgress = 0;
-      repaint();
-    }
-  });
-  container.querySelector("#adm-garden-lidar-remove")?.addEventListener("click", async () => {
-    const ctx = gardenContextFn?.();
-    if (!ctx?.activeGardenId) {
-      showToast(t("admin.toast.no_active_garden"), "error");
-      return;
-    }
-    if (!window.confirm(t("admin.garden.lidar_confirm_remove"))) return;
-    try {
-      state.gardenLidarStatus = await deleteGardenLidarApi(ctx.activeGardenId);
-      await onGardenStateChanged?.();
-      await loadGardenSettings();
-      showToast(t("admin.garden.lidar_removed"), "success");
-      repaint();
     } catch (err) {
       showToast(getApiErrorMessage(err), "error");
     }

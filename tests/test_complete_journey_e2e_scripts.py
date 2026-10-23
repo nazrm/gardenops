@@ -95,7 +95,7 @@ def test_phase_zero_complete_journey_files_exist() -> None:
         ROOT / "scripts" / "e2e" / "journeys" / "gardenMapPlants.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "dailyAttentionWork.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "observationToAction.cjs",
-        ROOT / "scripts" / "e2e" / "journeys" / "providersAndTerrain.cjs",
+        ROOT / "scripts" / "e2e" / "journeys" / "providersAndWeather.cjs",
         ROOT / "scripts" / "e2e" / "journeys" / "accessibilityAndResponsive.cjs",
         ORACLE,
         PHASE_THREE_ORACLE,
@@ -555,7 +555,6 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         "lifecycle_audit",
         "restore_import_graphs",
         "stable_domain_projection",
-        "terrain_provider_usage",
         'subscription_tier="pro"',
     ):
         assert marker in seeder_source
@@ -807,9 +806,6 @@ def test_phase_three_fixture_and_journey_wiring_are_declared() -> None:
     assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
     assert "APP_SECRETS_ENCRYPTION_KEY" in runner_source
-    assert "GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV" in runner_source
-    assert "'/shademap': proxyTarget" in runner_source
-    assert "VITE_SHADEMAP_BASEMAP_URL" in runner_source
     assert "readiness-failure.log" in runner_source
     assert "runObservationToAction" in journey_source
     assert 'require("./e2e/journeys/observationToAction.cjs")' in checker_source
@@ -1062,11 +1058,6 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         'target: "tasks", view: "overdue"',
     ):
         assert marker in journey_source
-    shade_panel_source = (ROOT / "frontend" / "src" / "components" / "shadePanel.ts").read_text(
-        encoding="utf-8",
-    )
-    assert "config.basemap_url_template" in shade_panel_source
-    assert "VITE_SHADEMAP_BASEMAP_URL" in shade_panel_source
     for endpoint in (
         "**/api/inventory*",
         "**/api/procurement*",
@@ -1177,12 +1168,12 @@ def test_phase_five_fixture_journey_and_identity_contract_are_declared() -> None
     }.issubset(oracle["phase_five"]["database_boundaries"]["owned_tables"])
     assert oracle["phase_five"]["read_side_effects"] == {
         "exact_counts": {
-            "provider_daily_usage": {"added": 2, "removed": 0},
-            "shademap_cache": {"added": 2, "removed": 0},
+            "provider_daily_usage": {"added": 0, "removed": 0},
+            "shademap_cache": {"added": 0, "removed": 0},
         },
         "exact_identity_counts": {
-            "provider_daily_usage": {"added": 2, "removed": 0, "updated": 0},
-            "shademap_cache": {"added": 2, "removed": 0, "updated": 0},
+            "provider_daily_usage": {"added": 0, "removed": 0, "updated": 0},
+            "shademap_cache": {"added": 0, "removed": 0, "updated": 0},
         },
     }
     for marker in (
@@ -1311,12 +1302,12 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     )
     assert oracle["phase_six"]["read_side_effects"] == {
         "exact_counts": {
-            "provider_daily_usage": {"added": 2, "removed": 0},
-            "shademap_cache": {"added": 2, "removed": 0},
+            "provider_daily_usage": {"added": 0, "removed": 0},
+            "shademap_cache": {"added": 0, "removed": 0},
         },
         "exact_identity_counts": {
-            "provider_daily_usage": {"added": 2, "removed": 0, "updated": 0},
-            "shademap_cache": {"added": 2, "removed": 0, "updated": 0},
+            "provider_daily_usage": {"added": 0, "removed": 0, "updated": 0},
+            "shademap_cache": {"added": 0, "removed": 0, "updated": 0},
         },
     }
     assert {"provider_daily_usage", "shademap_cache"}.issubset(
@@ -1347,8 +1338,8 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
         assert forbidden not in journey_source
 
 
-def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> None:
-    journey = ROOT / "scripts" / "e2e" / "journeys" / "providersAndTerrain.cjs"
+def test_phase_seven_provider_weather_journey_and_harness_are_registered() -> None:
+    journey = ROOT / "scripts" / "e2e" / "journeys" / "providersAndWeather.cjs"
     fixture = ROOT / "scripts" / "e2e" / "providers" / "deterministicLoopbackProvider.cjs"
     journey_source = journey.read_text(encoding="utf-8")
     fixture_source = fixture.read_text(encoding="utf-8")
@@ -1359,9 +1350,9 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
 
     assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert "GARDENOPS_E2E_LOOPBACK_PROVIDER=1" in runner_source
-    assert 'require("./e2e/journeys/providersAndTerrain.cjs")' in checker_source
+    assert 'require("./e2e/journeys/providersAndWeather.cjs")' in checker_source
     assert "phaseSelected(7)" in checker_source
-    assert "runProvidersAndTerrain" in checker_source
+    assert "runProvidersAndWeather" in checker_source
     assert "assertPhaseSevenDatabaseState" in checker_source
     assert '"Phase 7 stale-weather fixture was not prepared"' in checker_source
     assert "assertPhaseSevenAuditEvents" in checker_source
@@ -1373,8 +1364,6 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
     assert '"weather": weather' in seeder_source
     assert '"Complete journey Phase 7 weather cache is missing"' not in seeder_source
     assert '"phase_seven": _phase_seven_fixture_state()' in seeder_source
-    assert "_write_phase_seven_terrain_fixture" in seeder_source
-    assert "_write_phase_seven_estimated_sun_fixture" in seeder_source
     assert oracle["schema_version"] == 1
     assert oracle["phase_seven"]["profile_order"] == [
         "admin:desktop",
@@ -1382,11 +1371,8 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         "editor:desktop",
         "viewer:desktop",
     ]
-    assert oracle["phase_seven"]["fixture"]["terrain"]["filename"] == "phase-seven-terrain.las"
-    assert oracle["phase_seven"]["fixture"]["terrain"]["extent_m"] == 220.0
-    assert oracle["phase_seven"]["fixture"]["estimated_sun_csv_filename"] == "phase-seven-sun.csv"
     assert oracle["phase_seven"]["fixture"]["weather"]["stale_age_ms"] > 0
-    assert {"auth_passkey_challenges", "lidar_grid_cache"}.issubset(
+    assert {"auth_passkey_challenges"}.issubset(
         oracle["phase_seven"]["database_boundaries"]["owned_tables"]
     )
     assert any(
@@ -1408,12 +1394,6 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         event["path"] == "/api/weather/check" and event["status_code"] == 200
         for event in oracle["phase_seven"]["audit_contract"]["events"]
     )
-    state_writes = {
-        (event["actor"], event["status_code"]): event["count"]
-        for event in oracle["phase_seven"]["audit_contract"]["events"]
-        if event["method"] == "PATCH" and event["path"] == "/api/shademap/state"
-    }
-    assert state_writes == {("admin", 200): 4, ("editor", 200): 2, ("viewer", 403): 1}
     provider_writes = {
         (event["actor"], event["status_code"]): event["count"]
         for event in oracle["phase_seven"]["audit_contract"]["events"]
@@ -1429,10 +1409,6 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         ],
     }
     for marker in (
-        "data-phase-seven-simulator",
-        "data-phase-seven-terrain",
-        "signed terrain tile rendering",
-        "data-phase-seven-terrain-size",
         "provider_fixture_redacted",
         "exerciseProviderSettingsAdmin",
         "assertProviderSettingsRoleBoundary",
@@ -1443,19 +1419,9 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         "Phase 7 editor",
         "Phase 7 viewer",
         "exerciseStaleWeather",
-        "assertViewerShadeBoundary",
-        "assertViewerTerrainBoundary",
-        "consumeExpectedViewerTerrainDiagnostics",
         "#mobile-admin-btn:visible",
-        "viewer_write_denied",
-        "consumeExpectedViewerShadeDiagnostics",
-        '"/shademap/runtime.js"',
-        'page.once("dialog"',
-        "inset overlay is mode-dependent",
     ):
         assert marker in journey_source
-    assert "const denied = [\n      await request(`/api/gardens/${id}/lidar`" in journey_source
-    assert "Promise.all([\n      request(`/api/gardens/${id}/lidar`" not in journey_source
     for marker in (
         '"127.0.0.1"',
         '"timeout"',
@@ -1463,11 +1429,7 @@ def test_phase_seven_provider_terrain_journey_and_harness_are_registered() -> No
         '"quota"',
         '"unauthorized"',
         '"partial"',
-        '"/shademap/runtime.js"',
         '"/__fixture__/state"',
-        "createImageBitmap",
-        "terrainImage",
-        '"rendered"',
     ):
         assert marker in fixture_source
     for forbidden in ("route.fulfill(", "context.addCookies(", "page.setContent("):
@@ -1767,9 +1729,9 @@ def test_phase_six_accounts_for_deterministic_map_bootstrap_side_effects() -> No
     assert "phase_six_map_bootstrap_read_side_effect_oracle" in checker_source
     contract = oracle["phase_six"]["read_side_effects"]
     for table in ("provider_daily_usage", "shademap_cache"):
-        assert contract["exact_counts"][table] == {"added": 2, "removed": 0}
+        assert contract["exact_counts"][table] == {"added": 0, "removed": 0}
         assert contract["exact_identity_counts"][table] == {
-            "added": 2,
+            "added": 0,
             "removed": 0,
             "updated": 0,
         }
@@ -1807,14 +1769,14 @@ const initial = {
   shademap_cache: row('b', 0),
 };
 const final = {
-  provider_daily_usage: row('a', 2),
-  shademap_cache: row('b', 2),
+  provider_daily_usage: row('a', 0),
+  shademap_cache: row('b', 0),
 };
 assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
 try {
   assertWholeTableMutationAccounting(initial, {
     provider_daily_usage: row('a', 3),
-    shademap_cache: row('b', 2),
+    shademap_cache: row('b', 0),
   }, new Set(tables), accounting);
   process.exit(3);
 } catch (error) {
@@ -2260,176 +2222,31 @@ def test_phase_eight_allows_only_profile_bound_passkey_challenge_starts() -> Non
 
 
 def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
-    checker_source = CHECKER.read_text(encoding="utf-8")
-    oracle = json.loads(ORACLE.read_text(encoding="utf-8"))
-
-    assert "const phaseTwoReadSideEffectTables" in checker_source
-    assert checker_source.count("assertPhaseOneExactSideEffects(") == 2
-    assert '"auth_passkey_challenges"' in checker_source
-    accounting = oracle["phase_two"]["whole_table_mutation_accounting"]
-    assert {"provider_daily_usage", "shademap_cache"}.issubset(accounting["phase_two_tables"])
-    for scope in ("phase_two_only", "cumulative_through_phase_two"):
-        for table, expected_added in (("provider_daily_usage", 4), ("shademap_cache", 3)):
-            assert accounting["exact_counts"][scope][table] == {
-                "added": expected_added,
-                "removed": 0,
-            }
-            assert accounting["exact_identity_counts"][scope][table] == {
-                "added": expected_added,
-                "removed": 0,
-                "updated": 0,
-            }
-    assert accounting["exact_counts"]["cumulative_through_phase_two"][
-        "garden_map_object_units"
-    ] == {"added": 0, "removed": 1}
-    assert accounting["exact_identity_counts"]["cumulative_through_phase_two"][
-        "garden_map_object_units"
-    ] == {"added": 0, "removed": 1, "updated": 0}
-
+    """Retired shade requests must no longer create cache or quota rows."""
+    oracle = json.loads(ORACLE.read_text())["phase_two"]["whole_table_mutation_accounting"]
+    for scope in oracle["exact_counts"].values():
+        for table in ("provider_daily_usage", "shademap_cache"):
+            assert scope[table] == {"added": 0, "removed": 0}
     script = r"""
-const {
-  assertPhaseOneExactSideEffects,
-  assertWholeTableMutationAccounting,
-  phaseTwoOracle,
-} = require('./scripts/check_complete_journeys_e2e.cjs');
-const row = (prefix, count) => ({
-  count,
-  digest: prefix.repeat(32),
-  identity_columns: ['id'],
-  row_digests: Array.from(
-    { length: count }, (_, index) => String(index + 1).padStart(32, prefix),
-  ),
-  row_projections: Array.from({ length: count }, (_, index) => ({
-    identity_digest: String(index + 1).padStart(64, prefix),
-    row_digest: String(index + 1).padStart(64, prefix),
+const { assertPhaseOneExactSideEffects } = require('./scripts/check_complete_journeys_e2e.cjs');
+const row = (count) => ({
+  count, digest: String(count).repeat(32), identity_columns: ['id'],
+  row_digests: Array.from({length:count}, (_,i)=>String(i).padStart(32,'a')),
+  row_projections: Array.from({length:count}, (_,i)=>({
+    identity_digest:String(i).padStart(64,'a'),row_digest:String(i).padStart(64,'b'),
   })),
 });
-const fullOracle = phaseTwoOracle();
-const oracle = fullOracle.phase_two.whole_table_mutation_accounting;
-const tables = ['provider_daily_usage', 'shademap_cache'];
-const scope = oracle.exact_counts.phase_two_only;
-const identities = oracle.exact_identity_counts.phase_two_only;
-const accounting = Object.fromEntries(tables.map((table) => [table, {
-  allow_row_delta: true,
-  evidence: 'phase-two-read-side-effect-oracle',
-  expected_added: scope[table].added,
-  expected_removed: scope[table].removed,
-  expected_identity_added: identities[table].added,
-  expected_identity_removed: identities[table].removed,
-  expected_identity_updated: identities[table].updated,
-}]));
-const initial = {
-  provider_daily_usage: row('a', 0),
-  shademap_cache: row('b', 0),
-};
-const final = {
-  provider_daily_usage: row('a', 4),
-  shademap_cache: row('b', 3),
-};
-assertWholeTableMutationAccounting(initial, final, new Set(tables), accounting);
-const phaseOneInitial = { ...initial, garden_map_object_units: row('c', 1) };
-const fixture = {
-  roles: { admin: 'admin', editor: 'editor' },
-  gardens: { alpha: { id: 1 }, beta: { id: 2 } },
-};
-const usage = (usageDay, scopeType, scopeId, scopeUsername, requestCount) => ({
-  feature: 'shademap-terrain-miss',
-  request_count: requestCount,
-  scope_id: scopeId,
-  scope_type: scopeType,
-  scope_username: scopeUsername,
-  usage_day: usageDay,
-});
-const sameDay = [
-  usage('2026-08-21', 'user', 1, 'admin', 5),
-  usage('2026-08-21', 'user', 4, 'editor', 2),
-  usage('2026-08-21', 'garden', 1, '', 6),
-  usage('2026-08-21', 'garden', 2, '', 3),
-];
-const oneSplit = [
-  usage('2026-08-21', 'user', 1, 'admin', 3),
-  usage('2026-08-22', 'user', 1, 'admin', 4),
-  usage('2026-08-22', 'user', 4, 'editor', 2),
-  usage('2026-08-22', 'garden', 1, '', 6),
-  usage('2026-08-21', 'garden', 2, '', 1),
-];
-const bothSplit = [
-  usage('2026-08-21', 'user', 1, 'admin', 3),
-  usage('2026-08-22', 'user', 1, 'admin', 2),
-  usage('2026-08-22', 'user', 4, 'editor', 2),
-  usage('2026-08-21', 'garden', 1, '', 4),
-  usage('2026-08-22', 'garden', 1, '', 2),
-  usage('2026-08-21', 'garden', 2, '', 1),
-];
-const phaseOneState = (terrainProviderUsage) => ({
-  terrain_provider_usage: terrainProviderUsage,
-});
-const phaseOneFinal = (providerCount) => ({
-  provider_daily_usage: row('a', providerCount),
-  shademap_cache: row('b', 3),
-  garden_map_object_units: row('c', 0),
-});
-for (const rows of [sameDay, oneSplit, bothSplit]) {
-  assertPhaseOneExactSideEffects(
-    phaseOneInitial,
-    phaseOneFinal(rows.length),
-    phaseOneState([]),
-    phaseOneState(rows),
-    fixture,
-  );
-}
-for (const [rows, message] of [
-  [[
-    ...sameDay.slice(0, 1),
-    usage('2026-08-21', 'user', 5, 'viewer', 2),
-    ...sameDay.slice(2),
-  ], 'scope'],
-  [[{ ...sameDay[0], feature: 'ai-identify' }, ...sameDay.slice(1)], 'feature'],
-  [[...sameDay, usage('2026-08-21', 'garden', 2, '', 1)], 'duplicate'],
-  [oneSplit.map((row) => ({
-    ...row,
-    usage_day: row.usage_day === '2026-08-22' ? '2026-08-23' : row.usage_day,
-  })), 'adjacent'],
-  [[
-    ...sameDay,
-    usage('2026-08-22', 'user', 1, 'admin', 2),
-    usage('2026-08-22', 'user', 4, 'editor', 2),
-    usage('2026-08-22', 'garden', 1, '', 2),
-  ], '4-6'],
-]) {
-  try {
-    assertPhaseOneExactSideEffects(
-      phaseOneInitial,
-      phaseOneFinal(rows.length),
-      phaseOneState([]),
-      phaseOneState(rows),
-      fixture,
-    );
-    process.exit(3);
-  } catch (error) {
-    if (!String(error.message).includes(message)) process.exit(4);
-  }
-}
-try {
-  assertPhaseOneExactSideEffects(
-    phaseOneInitial,
-    {
-      provider_daily_usage: row('a', 5),
-      shademap_cache: row('b', 3),
-      garden_map_object_units: row('c', 0),
-    },
-    phaseOneState([]),
-    phaseOneState(sameDay),
-    fixture,
-  );
-  process.exit(5);
-} catch (error) {
-  if (!String(error.message).includes('expected_added')) process.exit(6);
+const initial={garden_map_object_units:row(1),provider_daily_usage:row(0),shademap_cache:row(0)};
+const final={...initial,garden_map_object_units:row(0)};
+assertPhaseOneExactSideEffects(initial,final,{}, {}, {});
+for (const table of ['provider_daily_usage','shademap_cache']) {
+  let rejected=false;
+  try { assertPhaseOneExactSideEffects(initial,{...final,[table]:row(1)}, {}, {}, {}); }
+  catch (error) { rejected=String(error.message).includes('expected_added'); }
+  if (!rejected) throw new Error('Unexpected retired read side effect accepted: '+table);
 }
 """
-    result = subprocess.run(
-        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
-    )
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
@@ -3193,9 +3010,6 @@ const payload = {
     plot_number: 1, sub_zone: '', zone_code: 'A', zone_name: 'Alpha',
   }],
   schema_version: 1,
-  shademap: { analysis_timestamp_ms: 0, mode: 'off', preset: 'default', selected_plot_id: null },
-  shademap_calibration: null,
-  shademap_obstacles: [],
 };
 const snapshot = {
   garden_id: 1, garden_owner_username: 'admin',

@@ -26,7 +26,7 @@ const { runObservationToAction } = require("./e2e/journeys/observationToAction.c
 const { runPlanningAndReporting } = require("./e2e/journeys/planningAndReporting.cjs");
 const { runIdentityAndRoles } = require("./e2e/journeys/identityAndRoles.cjs");
 const { runOfflineAndFailureRecovery } = require("./e2e/journeys/offlineAndFailureRecovery.cjs");
-const { runProvidersAndTerrain } = require("./e2e/journeys/providersAndTerrain.cjs");
+const { runProvidersAndWeather } = require("./e2e/journeys/providersAndWeather.cjs");
 const { runAccessibilityAndResponsive } = require("./e2e/journeys/accessibilityAndResponsive.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -128,9 +128,9 @@ const PHASE_ONE_EXACT_FIXED_SIDE_EFFECT_ACCOUNTING = {
   },
   shademap_cache: {
     allow_row_delta: true,
-    evidence: "phase_one_map_profiles_terrain_cache_misses",
-    expected_added: 3,
-    expected_identity_added: 3,
+    evidence: "phase_one_no_retired_shade_cache_writes",
+    expected_added: 0,
+    expected_identity_added: 0,
     expected_identity_removed: 0,
     expected_identity_updated: 0,
     expected_removed: 0,
@@ -438,40 +438,26 @@ function assertPhaseSevenProfileEvidence(profiles, oracle = phaseSevenOracle()) 
     && adminDesktop?.checks?.weather?.stale_forecast_visible === true
     && adminDesktop?.checks?.weather?.stale_refresh_non_authoritative === true,
   "Phase 7 administrator desktop provider matrix is incomplete");
-  assert(adminDesktop?.checks?.shade?.external_canvas === true
-    && adminDesktop?.checks?.shade?.pixel_change === true
-    && adminDesktop?.checks?.terrain?.upload_and_cleanup === true
-    && adminDesktop?.checks?.terrain?.cleanup_persisted === true
-    && adminDesktop?.checks?.provider_settings?.managed_secret_metadata_redacted === true
+  assert(adminDesktop?.checks?.provider_settings?.managed_secret_metadata_redacted === true
     && adminDesktop?.checks?.provider_settings?.reauthentication_enforced === true
     && adminDesktop?.checks?.provider_settings?.cleanup_persisted === true,
-  "Phase 7 administrator desktop ShadeMap, terrain, or provider-settings proof is incomplete");
+  "Phase 7 administrator desktop provider-settings proof is incomplete");
   assert(adminMobile?.checks?.chat_success?.success === true
-    && adminMobile?.checks?.shade?.external_canvas === true
-    && adminMobile?.checks?.terrain?.upload_and_cleanup === true
-    && adminMobile?.checks?.terrain?.cleanup_persisted === true
     && adminMobile?.checks?.provider_settings?.mobile_surface_reachable === true
     && adminMobile?.checks?.provider_settings?.refresh_preserved_redacted_summary === true,
   "Phase 7 administrator mobile proof is incomplete");
-  assert(editor?.checks?.shade?.external_canvas === true
-    && editor?.checks?.terrain?.upload_and_cleanup === true
-    && editor?.checks?.terrain?.cleanup_persisted === true
-    && editor?.checks?.chat_success?.success === true
+  assert(editor?.checks?.chat_success?.success === true
     && editor?.checks?.provider_settings?.ui_hidden === true
     && editor?.checks?.provider_settings?.api_read_denied === true
     && editor?.checks?.provider_settings?.api_write_denied === true,
-  "Phase 7 editor chat, ShadeMap, or provider-settings boundary is incomplete");
-  assert(viewer?.checks?.shade?.viewer_read_only === true
-    && viewer?.checks?.shade?.viewer_controls_disabled === true
-    && viewer?.checks?.terrain?.viewer_write_denied === true
-    && viewer?.checks?.chat_success?.success === true
+  "Phase 7 editor chat or provider-settings boundary is incomplete");
+  assert(viewer?.checks?.chat_success?.success === true
     && viewer?.checks?.provider_settings?.ui_hidden === true
     && viewer?.checks?.provider_settings?.api_read_denied === true
     && viewer?.checks?.provider_settings?.api_write_denied === true,
-  "Phase 7 viewer chat, ShadeMap, or provider-settings boundary is incomplete");
+  "Phase 7 viewer chat or provider-settings boundary is incomplete");
   assert(profiles.every((profile) => profile.checks?.provider_fixture_redacted === true
-    && profile.checks?.browser_diagnostics === true
-    && profile.checks?.shademap_runtime_loaded === true),
+    && profile.checks?.browser_diagnostics === true),
   "Phase 7 fixture redaction or browser diagnostics proof is incomplete");
   return { profile_matrix_enforced: true, profile_order: observed };
 }
@@ -699,8 +685,8 @@ function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
     ["garden_journal_entries", 1],
     ["garden_journal_entry_plants", 2],
     ["garden_journal_entry_plots", 1],
-    ["provider_daily_usage", 2],
-    ["shademap_cache", 2],
+    ["provider_daily_usage", 0],
+    ["shademap_cache", 0],
   ]) {
     const delta = tableDelta(table);
     assert(delta.added.length === added && delta.removed.length === 0 && delta.updated.length === 0,
@@ -807,18 +793,18 @@ function assertPhaseEightWholeTableMutationAccounting(initial, final, fixture, e
     },
     provider_daily_usage: {
       allow_row_delta: true,
-      evidence: "phase_eight_weather_availability_reads",
-      expected_added: 2,
-      expected_identity_added: 2,
+      evidence: "phase_eight_no_provider_calls",
+      expected_added: 0,
+      expected_identity_added: 0,
       expected_identity_removed: 0,
       expected_identity_updated: 0,
       expected_removed: 0,
     },
     shademap_cache: {
       allow_row_delta: true,
-      evidence: "phase_eight_shade_availability_reads",
-      expected_added: 2,
-      expected_identity_added: 2,
+      evidence: "phase_eight_no_retired_shade_cache_writes",
+      expected_added: 0,
+      expected_identity_added: 0,
       expected_identity_removed: 0,
       expected_identity_updated: 0,
       expected_removed: 0,
@@ -837,11 +823,8 @@ function assertPhaseSevenDatabaseState(initial, final, fixture) {
   assert(initial.alpha?.weather && final.alpha?.weather,
     "Phase 7 stale-weather fixture was not prepared");
   assert(canonicalJson(initial.beta) === canonicalJson(final.beta),
-    "Phase 7 changed the non-selected garden ShadeMap state");
-  assert(final.alpha?.calibration?.enabled === true,
-    "Phase 7 calibration did not persist for the selected garden");
-  assert(Array.isArray(final.alpha?.obstacles) && final.alpha.obstacles.length === 0,
-    "Phase 7 temporary obstacle was not removed");
+    "Phase 7 changed the non-selected garden state");
+
   assert(canonicalJson(initial.alpha?.weather) === canonicalJson(final.alpha?.weather),
     "Phase 7 stale weather refresh changed the degraded forecast cache");
   const usage = final.provider_usage || [];
@@ -873,12 +856,10 @@ function assertPhaseSevenDatabaseState(initial, final, fixture) {
   assert(canonicalJson(providerSettings) === canonicalJson(expectedProviderSettings),
     "Phase 7 provider settings final database state drifted");
   return {
-    calibration_persisted: true,
     provider_settings_secret_cleanup: true,
     provider_budget_scoped: true,
     provider_budgets_exact: true,
     stale_weather_preserved: true,
-    temporary_obstacle_removed: true,
   };
 }
 
@@ -3372,7 +3353,6 @@ function normalizeAuditProjectionPath(value) {
     "/api/calendar/manual-events",
     "/api/calendar/subscriptions",
     "/api/client-errors",
-    "/api/gardens/{garden_id}/lidar",
     "/api/harvest",
     "/api/issues",
     "/api/journal",
@@ -3383,9 +3363,6 @@ function normalizeAuditProjectionPath(value) {
     "/api/planner/goal",
     "/api/plants",
     "/api/procurement",
-    "/api/shademap/calibration",
-    "/api/shademap/obstacles",
-    "/api/shademap/state",
     "/api/tasks",
     "/api/tasks/batch-action",
     "/api/weather/check",
@@ -3485,10 +3462,6 @@ function normalizeAuditProjectionPath(value) {
     [
       /^\/api\/procurement\/[^/?#]+$/,
       () => "/api/procurement/{item_id}",
-    ],
-    [
-      /^\/api\/shademap\/obstacles\/[^/?#]+$/,
-      () => "/api/shademap/obstacles/{obstacle_id}",
     ],
   ];
   for (const [pattern, projection] of parameterizedRoutes) {
@@ -3735,85 +3708,17 @@ function assertWholeTableMutationAccounting(initial, final, allowedTables, accou
   };
 }
 
-function assertPhaseOneTerrainProviderUsage(initialRows, finalRows, fixture) {
-  assert(Array.isArray(initialRows) && initialRows.length === 0,
-    "Phase 1 terrain provider usage did not start empty");
-  assert(Array.isArray(finalRows), "Phase 1 terrain provider usage is missing");
-  const usageDays = new Set();
-  const identities = new Set();
-  const logicalScopes = new Set();
-  const userScopeIds = new Map();
-  for (const row of finalRows) {
-    assert(row?.feature === "shademap-terrain-miss",
-      "Phase 1 terrain provider usage contained an unexpected feature");
-    const usageDay = String(row.usage_day || "");
-    const parsedUsageDay = new Date(`${usageDay}T00:00:00.000Z`);
-    assert(/^\d{4}-\d{2}-\d{2}$/.test(usageDay)
-      && Number.isFinite(parsedUsageDay.getTime())
-      && parsedUsageDay.toISOString().slice(0, 10) === usageDay,
-    "Phase 1 terrain provider usage day was invalid");
-    assert(Number.isSafeInteger(row.scope_id) && row.scope_id > 0,
-      "Phase 1 terrain provider usage scope ID was invalid");
-    assert(Number.isSafeInteger(row.request_count) && row.request_count > 0,
-      "Phase 1 terrain provider usage request count was invalid");
-    usageDays.add(usageDay);
-    const identity = `${usageDay}:${row.feature}:${row.scope_type}:${row.scope_id}`;
-    assert(!identities.has(identity), "Phase 1 terrain provider usage contained a duplicate row");
-    identities.add(identity);
-
-    let scopeKey;
-    if (row.scope_type === "user") {
-      assert([fixture.roles.admin, fixture.roles.editor].includes(row.scope_username),
-        "Phase 1 terrain provider usage contained an unexpected user scope");
-      assert(!userScopeIds.has(row.scope_username)
-        || userScopeIds.get(row.scope_username) === row.scope_id,
-      "Phase 1 terrain provider usage user scope ID changed across UTC days");
-      userScopeIds.set(row.scope_username, row.scope_id);
-      scopeKey = `user:${row.scope_username}`;
-    } else {
-      assert(row.scope_type === "garden" && row.scope_username === ""
-        && [fixture.gardens.alpha.id, fixture.gardens.beta.id].includes(row.scope_id),
-      "Phase 1 terrain provider usage contained an unexpected garden scope");
-      scopeKey = `garden:${row.scope_id}`;
-    }
-    logicalScopes.add(scopeKey);
-  }
-  const sortedUsageDays = [...usageDays].sort();
-  assert(sortedUsageDays.length === 1 || sortedUsageDays.length === 2,
-    "Phase 1 terrain provider usage did not span one or two UTC days");
-  if (sortedUsageDays.length === 2) {
-    assert(new Date(`${sortedUsageDays[1]}T00:00:00.000Z`).getTime()
-      - new Date(`${sortedUsageDays[0]}T00:00:00.000Z`).getTime() === 86_400_000,
-    "Phase 1 terrain provider usage UTC days were not adjacent");
-  }
-  const expectedScopes = [
-    `user:${fixture.roles.admin}`,
-    `user:${fixture.roles.editor}`,
-    `garden:${fixture.gardens.alpha.id}`,
-    `garden:${fixture.gardens.beta.id}`,
-  ].sort();
-  assert(canonicalJson([...logicalScopes].sort()) === canonicalJson(expectedScopes),
-    "Phase 1 terrain provider usage logical scopes were unexpected");
-  assert(finalRows.length >= 4 && finalRows.length <= 6,
-    "Phase 1 terrain provider usage did not contain 4-6 validated identity rows");
-  return finalRows.length;
-}
-
 function assertPhaseOneExactSideEffects(initial, final, initialState, finalState, fixture) {
   const tables = new Set(PHASE_ONE_EXACT_SIDE_EFFECT_TABLES);
   const projection = (domainTables) => Object.fromEntries(
     [...tables].map((table) => [table, domainTables[table]]),
   );
-  const providerRowCount = assertPhaseOneTerrainProviderUsage(
-    initialState?.terrain_provider_usage,
-    finalState?.terrain_provider_usage,
-    fixture,
-  );
+  const providerRowCount = 0;
   const accounting = {
     ...PHASE_ONE_EXACT_FIXED_SIDE_EFFECT_ACCOUNTING,
     provider_daily_usage: {
       allow_row_delta: true,
-      evidence: "phase_one_map_profiles_terrain_provider_misses",
+      evidence: "phase_one_no_provider_usage",
       expected_added: providerRowCount,
       expected_identity_added: providerRowCount,
       expected_identity_removed: 0,
@@ -7313,9 +7218,6 @@ function assertExactPhaseOneMobileSnapshot(snapshots, expected) {
       "map_objects",
       "plots",
       "schema_version",
-      "shademap",
-      "shademap_calibration",
-      "shademap_obstacles",
     ]),
     "Mobile snapshot payload fields were unexpected",
   );
@@ -8196,7 +8098,7 @@ function assertNoResponseMocks() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/identityAndRoles.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/offlineAndFailureRecovery.cjs"), "utf8"),
-    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/providersAndTerrain.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/providersAndWeather.cjs"), "utf8"),
   ].join("\n");
   const forbiddenCalls = [
     `route.${"fulfill"}(`,
@@ -8217,7 +8119,7 @@ function assertNoNodeRequestClients() {
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/planningAndReporting.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/identityAndRoles.cjs"), "utf8"),
     fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/offlineAndFailureRecovery.cjs"), "utf8"),
-    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/providersAndTerrain.cjs"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "scripts/e2e/journeys/providersAndWeather.cjs"), "utf8"),
   ].join("\n");
   for (const forbidden of [
     "context.request",
@@ -8282,7 +8184,7 @@ async function main() {
       ...(phaseSelected(4) ? ["P4", "P6", "I1", "L1", "L2", "R2", "R3"] : []),
       ...(phaseSelected(5) ? ["A1", "A2", "A4", "C1", "C3", "C5", "CROSS-02"] : []),
       ...(phaseSelected(6) ? ["OFF-01"] : []),
-      ...(phaseSelected(7) ? ["M5", "I2", "I3", "I4", "C4", "C6"] : []),
+      ...(phaseSelected(7) ? ["I2", "I3", "I4", "C4"] : []),
       ...(phaseSelected(8) ? ["A1", "A3", "M1", "D1", "D2", "P1", "P2", "C3", "CROSS-01"] : []),
       ...(phaseSelected(9) ? [
         "M1", "M3", "D1", "D2", "D4", "D5", "P1", "P2", "P4", "R2", "CROSS-01",
@@ -8581,15 +8483,9 @@ async function main() {
       );
       currentStage = "phase-seven-browser";
       phaseSevenDatabaseBaseline = await settledDatabaseSnapshot("Phase 7 database baseline");
-      const terrainName = fixture?.phase_seven?.fixture?.terrain?.filename;
-      assert(typeof terrainName === "string" && terrainName === path.basename(terrainName),
-        "Phase 7 terrain fixture filename is invalid");
-      const terrainFile = path.join(ARTIFACT_DIR, terrainName);
-      const terrainStat = fs.lstatSync(terrainFile);
-      assert(terrainStat.isFile() && !terrainStat.isSymbolicLink() && terrainStat.size > 0,
-        "Phase 7 terrain fixture is unavailable");
+
       const phaseSevenProfileStart = manifest.profiles.length;
-      await runProvidersAndTerrain({
+      await runProvidersAndWeather({
         artifactDir: ARTIFACT_DIR,
         baseUrl: BASE_URL,
         browser,
@@ -8597,7 +8493,6 @@ async function main() {
         fixture,
         onProfile: (profile) => manifest.profiles.push(profile),
         password: PASSWORD,
-        terrainFile,
         username: USERNAME,
       });
       phaseSevenProfiles = manifest.profiles.slice(phaseSevenProfileStart);
@@ -9231,7 +9126,7 @@ async function main() {
       table,
       {
         allow_row_delta: true,
-        evidence: "phase_seven_browser_provider_shade_terrain_boundary",
+        evidence: "phase_seven_browser_provider_weather_boundary",
       },
     ]));
     const wholeTableMutationAccounting = phaseEightRan

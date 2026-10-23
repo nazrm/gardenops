@@ -99,7 +99,6 @@ export interface PlotCallbacks {
   getPlotLabel?: ((plotId: string) => string) | undefined;
   onEditPlot: (plotId: string) => void;
   onPlantAssignmentsChanged: (pltIds?: string[]) => Promise<void> | void;
-  onPlotFocusChanged: (plotId: string | null) => void;
   onViewJournal: (plotId: string) => void;
   onMediaTargetsChanged: (targets: MediaLinkRef[]) => void;
   onCreatePlant?: ((preselectedPlotId: string) => void) | undefined;
@@ -1245,7 +1244,6 @@ function closePanel(state: AppState, cbs: PlotCallbacks): void {
     el.classList.remove("selected");
   });
   state.selectedPlotId = null;
-  cbs.onPlotFocusChanged(null);
 }
 
 async function hydrateActivePlotPanel(
@@ -1366,7 +1364,6 @@ export async function selectPlot(
   }
   const { plot, historical } = resolved;
   state.selectedPlotId = plotId;
-  cbs.onPlotFocusChanged(plotId);
   const panelOptions = historical
     ? { readOnly: true, plotLabel: plot.display_name?.trim() || plot.plot_id }
     : {};
@@ -1455,7 +1452,6 @@ export async function selectPlot(
     onEdit: cbs.canWrite() ? () => cbs.onEditPlot(plotId) : undefined,
     onDismiss: () => {
       state.selectedPlotId = null;
-      cbs.onPlotFocusChanged(null);
       document
         .querySelectorAll(".plot.selected")
         .forEach((el) => el.classList.remove("selected"));
@@ -1472,7 +1468,6 @@ export async function openDrawerForPlot(
   cancelPendingPlantSearch();
   const seq = ++plotSelectionSeq;
   state.selectedPlotId = plotId;
-  cbs.onPlotFocusChanged(plotId);
   const plants = await getPlotPlantsCached(plotId);
   if (seq !== plotSelectionSeq || state.selectedPlotId !== plotId) return;
   const supplemental = getCachedPlotSupplementalData(plotId);

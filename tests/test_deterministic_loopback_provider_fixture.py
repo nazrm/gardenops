@@ -235,38 +235,6 @@ def test_openai_sdk_accepts_the_fixture_responses_contract() -> None:
         process.close()
 
 
-def test_shademap_sdk_success_is_counted_without_retaining_api_key() -> None:
-    process = FixtureProcess("success")
-    try:
-        status, body = _request(
-            f"{process.handoff['fixture_base_url']}/shademap/sdk/load",
-            body=b'{"api_key":"shademap-secret-value"}',
-            headers={"Content-Type": "application/json"},
-        )
-        assert status == 200
-        assert json.loads(body) == {"fixture": "shademap-sdk-load", "status": "ok"}
-        state = _state(process)
-        assert state["counts"] == {
-            "provider_requests": 1,
-            "by_path": {"/shademap/sdk/load": 1},
-            "by_scenario": {"success": 1},
-        }
-        assert state["requests"] == [
-            {
-                "method": "POST",
-                "path": "/shademap/sdk/load",
-                "request_shape": {
-                    "body_kind": "json_object",
-                    "content_type": "application/json",
-                    "json_keys": ["api_key"],
-                },
-            },
-        ]
-        assert "shademap-secret-value" not in json.dumps(state)
-    finally:
-        process.close()
-
-
 def test_cors_scenario_control_switches_provider_behavior_without_payload_retention() -> None:
     process = FixtureProcess("success")
     control_url = f"{process.handoff['fixture_base_url']}/__fixture__/scenario"
@@ -400,7 +368,6 @@ def test_handoff_is_loopback_only_and_sigterm_closes_the_listener(tmp_path: Path
     for raw_url in (
         handoff["openai_base_url"],
         handoff["fixture_base_url"],
-        handoff["shademap_sdk_load_url"],
         handoff["state_url"],
         handoff["control_url"],
     ):

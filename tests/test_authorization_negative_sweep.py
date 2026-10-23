@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from starlette.requests import Request as StarletteRequest
 
 import gardenops.db as db
-from gardenops.routers import auth, media, saved_views, shademap, statistics
+from gardenops.routers import auth, media, saved_views, statistics
 from gardenops.security import AuthContext
 from tests.base import BaseApiTest
 
@@ -87,10 +87,6 @@ class TestAuthorizationNegativeSweep(BaseApiTest):
                 (
                     "/api/exports/backup",
                     lambda request: statistics.export_backup(request, conn),
-                ),
-                (
-                    "/api/shademap/state",
-                    lambda request: shademap.get_shademap_state_api(request, conn),
                 ),
                 (
                     "/api/media",

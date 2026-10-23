@@ -112,7 +112,7 @@ verify_locked_dependencies() {
   : > "$npm_userconfig"
   chmod 600 "$npm_userconfig"
   command -v uv >/dev/null 2>&1 || die "uv is required to verify the locked Python environment"
-  uv sync --locked --all-groups --check --no-config --extra terrain > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
+  uv sync --locked --all-groups --check --no-config > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
     || die "locked Python dependency verification failed"
   "$ROOT_DIR/.venv/bin/python" -m pip check > "$LOG_DIR/python-pip-check.log" 2>&1 \
     || die "installed Python dependency verification failed"
@@ -147,7 +147,7 @@ write_isolated_vite_config() {
     "const envDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_ENV_DIR;" \
     "const outDir = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR;" \
     "const proxyTarget = process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET;" \
-    "const proxy = { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget, '/shademap': proxyTarget };" \
+    "const proxy = { '/api': proxyTarget, '/calendar/subscriptions': proxyTarget };" \
     "export default async (configEnv) => {" \
     "  const resolved = typeof baseConfig === 'function' ? await baseConfig(configEnv) : baseConfig;" \
     "  return { ...resolved, root, envDir, build: { ...(resolved.build || {}), emptyOutDir: true, outDir }, preview: { ...(resolved.preview || {}), proxy }, server: { ...(resolved.server || {}), proxy } };" \
@@ -167,8 +167,6 @@ vite_environment() {
     GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR="$VITE_DIST_DIR" \
     GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
     GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
-    VITE_SHADEMAP_ENABLED=true \
-    VITE_SHADEMAP_BASEMAP_URL="$VITE_SHADEMAP_BASEMAP_URL" \
     "$@"
 }
 
@@ -404,8 +402,6 @@ export GARDENOPS_COMPLETE_JOURNEYS_E2E_ARTIFACT_DIR="$ARTIFACT_DIR"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD="$EXPECTED_HEAD"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_FRONTEND_MODE=production-preview
 export PYTHON_DOTENV_DISABLED=1
-# A data URL keeps the browser journey local while the product default remains OpenStreetMap.
-VITE_SHADEMAP_BASEMAP_URL="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
 PRIVATE_DIR="$(mktemp -d /tmp/gardenops-complete-journeys.XXXXXX)"
 
@@ -451,9 +447,6 @@ validate_distinct_ports "$BACKEND_PORT" "$FRONTEND_PORT" "$PROVIDER_PORT"
 export GARDENOPS_VITE_PROXY_TARGET="http://127.0.0.1:${BACKEND_PORT}"
 export GARDENOPS_E2E_PROVIDER_URL="http://127.0.0.1:${PROVIDER_PORT}/v1"
 export GARDENOPS_COMPLETE_JOURNEYS_E2E_PROVIDER_URL="$GARDENOPS_E2E_PROVIDER_URL"
-export SHADEMAP="complete-journeys-loopback-shademap-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
-export SHADEMAP_PUBLIC_API_KEY="complete-journeys-loopback-shademap-public-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
-export SHADEMAP_TILE_SIGNING_SECRET="complete-journeys-loopback-terrain-signing-key" # push-sanitizer: allow SECRET_ASSIGNMENT - fixed disposable fixture
 export AUTH_PASSKEY_RP_ID="localhost"
 export AUTH_PASSKEY_ORIGINS="http://localhost:${FRONTEND_PORT}"
 
@@ -491,7 +484,6 @@ write_isolated_vite_config
 "$ROOT_DIR/.venv/bin/python" scripts/seed_complete_journeys_e2e.py \
   --output "$FIXTURE_PATH"
 chmod 600 "$FIXTURE_PATH"
-export GARDENOPS_E2E_SHADEMAP_ESTIMATE_CSV="$ARTIFACT_DIR/phase-seven-sun.csv"
 
 setsid node "$ROOT_DIR/scripts/e2e/providers/deterministicLoopbackProvider.cjs" \
   --port "$PROVIDER_PORT" \
@@ -520,7 +512,6 @@ setsid env -i \
   GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_DIST_DIR="$VITE_DIST_DIR" \
   GARDENOPS_COMPLETE_JOURNEYS_E2E_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
   GARDENOPS_VITE_PROXY_TARGET="$GARDENOPS_VITE_PROXY_TARGET" \
-  VITE_SHADEMAP_BASEMAP_URL="$VITE_SHADEMAP_BASEMAP_URL" \
   "$ROOT_DIR/frontend/node_modules/.bin/vite" preview \
     --config "$VITE_CONFIG_PATH" --host localhost --port "$FRONTEND_PORT" --strictPort \
     > "$LOG_DIR/frontend.log" 2>&1 &

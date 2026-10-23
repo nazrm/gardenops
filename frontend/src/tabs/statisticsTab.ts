@@ -290,11 +290,7 @@ async function loadPlanner(
       limit: 10,
     };
     if (goal) params["goal"] = goal;
-    if (ctx.state.sunlitPlotIds.size > 0) {
-      params["sunlit_plot_ids"] = Array.from(
-        ctx.state.sunlitPlotIds,
-      ).join(",");
-    }
+
     const [result, profile, wfResp] = await Promise.all([
       fetchPlannerSuggestionsApi(params, { gardenId: request.gardenId }),
       fetchGardenProfileApi({ gardenId: request.gardenId }),

@@ -20,7 +20,6 @@ from starlette.requests import Request as StarletteRequest
 import gardenops.db as db
 from gardenops.main import app
 from gardenops.rate_limit import reset_rate_limits
-from gardenops.routers.shademap import reset_shademap_abuse_tracking
 from gardenops.security import create_user
 from gardenops.security_metrics import reset_security_metrics
 from gardenops.security_mfa import _totp_at, _totp_period_seconds
@@ -579,7 +578,6 @@ class BaseApiTest(unittest.TestCase):
 
         reset_rate_limits()
         reset_security_metrics()
-        reset_shademap_abuse_tracking()
         reset_security_telemetry()
         self.client.cookies.clear()
         shutil.rmtree(self.test_media_dir, ignore_errors=True)

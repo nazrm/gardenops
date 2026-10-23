@@ -21,142 +21,9 @@ const SCENARIOS = new Set([
   "unauthorized",
   "partial",
 ]);
-const SHADEMAP_SDK_LOAD_PATH = "/shademap/sdk/load";
-const SHADEMAP_RUNTIME_SCRIPT_PATH = "/shademap/runtime.js";
-const PROVIDER_PATHS = new Set(["/v1/responses", SHADEMAP_SDK_LOAD_PATH]);
-const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
-// This is served as a real script through the GardenOps runtime proxy. It is a
-// deterministic contract adapter, not a replacement for a licensed simulator.
-const SHADEMAP_RUNTIME_SCRIPT = String.raw`(() => {
-  class GardenOpsShadeMap {
-    constructor(options) {
-      this.options = options;
-      this.handlers = new Set();
-      this.date = options.date || new Date();
-      this.sunExposure = false;
-      this._canvas = null;
-      this._canvasOverlay = null;
-      this._gl = null;
-      this._terrainImage = null;
-    }
-    addTo(map) {
-      const canvas = document.createElement("canvas");
-      canvas.dataset.phaseSevenSimulator = "true";
-      canvas.style.cssText = "inset:0;pointer-events:none;position:absolute;z-index:450;";
-      const size = map.getSize();
-      canvas.width = Math.max(1, Math.round(size.x));
-      canvas.height = Math.max(1, Math.round(size.y));
-      map.getContainer().append(canvas);
-      this.map = map;
-      this._canvas = canvas;
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      this._gl = {
-        RGBA: 0x1908,
-        UNSIGNED_BYTE: 0x1401,
-        readPixels: (x, y, width, height, _format, _type, destination) => {
-          const top = Math.max(0, canvas.height - y - height);
-          destination.set(context.getImageData(x, top, width, height).data);
-        },
-      };
-      this._canvasOverlay = { remove: () => canvas.remove() };
-      canvas.dataset.phaseSevenTerrain = "not-requested";
-      const terrainSource = this.options.terrainSource;
-      if (terrainSource && typeof terrainSource.getSourceUrl === "function") {
-        const center = map.getCenter();
-        const zoom = Math.min(terrainSource.maxZoom || 18, Math.max(0, Math.round(map.getZoom())));
-        const scale = 2 ** zoom;
-        const x = Math.floor((center.lng + 180) / 360 * scale);
-        const latitudeRadians = center.lat * Math.PI / 180;
-        const y = Math.floor((1 - Math.asinh(Math.tan(latitudeRadians)) / Math.PI) / 2 * scale);
-        canvas.dataset.phaseSevenTerrain = "requested";
-        fetch(terrainSource.getSourceUrl({ x, y, z: zoom }), { credentials: "same-origin" })
-          .then(async (response) => {
-            const contentType = response.headers.get("content-type") || "";
-            if (response.status !== 200 || !contentType.startsWith("image/png")) {
-              canvas.dataset.phaseSevenTerrain = "unavailable";
-              return;
-            }
-            const terrainImage = await createImageBitmap(await response.blob());
-            if (terrainImage.width < 1 || terrainImage.height < 1) {
-              terrainImage.close();
-              canvas.dataset.phaseSevenTerrain = "unavailable";
-              return;
-            }
-            this._terrainImage?.close();
-            this._terrainImage = terrainImage;
-            canvas.dataset.phaseSevenTerrain = "rendered";
-            canvas.dataset.phaseSevenTerrainSize = terrainImage.width + "x" + terrainImage.height;
-            this.flushSync();
-            this.emitIdle();
-          })
-          .catch(() => {
-            canvas.dataset.phaseSevenTerrain = "unavailable";
-            this.flushSync();
-            this.emitIdle();
-          });
-      }
-      this.flushSync();
-      requestAnimationFrame(() => this.emitIdle());
-      return this;
-    }
-    on(event, handler) {
-      if (event === "idle") this.handlers.add(handler);
-      return () => this.removeListener(event, handler);
-    }
-    once(event, handler) {
-      const wrapped = () => {
-        this.removeListener(event, wrapped);
-        handler();
-      };
-      return this.on(event, wrapped);
-    }
-    removeListener(event, handler) {
-      if (event === "idle") this.handlers.delete(handler);
-    }
-    removeAllListeners() { this.handlers.clear(); }
-    setDate(date) {
-      this.date = date;
-      this.flushSync();
-      requestAnimationFrame(() => this.emitIdle());
-      return this;
-    }
-    async setSunExposure(enabled) {
-      this.sunExposure = Boolean(enabled);
-      this.flushSync();
-      requestAnimationFrame(() => this.emitIdle());
-      return this;
-    }
-    async isPositionInSun() { return false; }
-    async isPositionInShade() { return true; }
-    async getHoursOfSun() { return this.sunExposure ? 6 : 3; }
-    flushSync() {
-      if (!this._canvas) return;
-      const context = this._canvas.getContext("2d", { willReadFrequently: true });
-      const minute = this.date.getHours() * 60 + this.date.getMinutes();
-      const hue = (minute + this.date.getDate() * 19 + (this.sunExposure ? 137 : 0)) % 360;
-      context.clearRect(0, 0, this._canvas.width, this._canvas.height);
-      if (this._terrainImage) {
-        context.drawImage(this._terrainImage, 0, 0, this._canvas.width, this._canvas.height);
-      }
-      context.fillStyle = "hsla(" + hue + ", 78%, 42%, " + (this._terrainImage ? "0.46" : "0.72") + ")";
-      context.fillRect(0, 0, this._canvas.width, this._canvas.height);
-      context.fillStyle = this.sunExposure ? "rgba(255, 221, 84, 0.72)" : "rgba(24, 42, 78, 0.74)";
-      const inset = Math.max(8, Math.round(Math.min(this._canvas.width, this._canvas.height) / 7));
-      context.fillRect(inset, inset, this._canvas.width - inset * 2, this._canvas.height - inset * 2);
-    }
-    onRemove() {
-      this._terrainImage?.close();
-      this._terrainImage = null;
-      this._canvasOverlay?.remove();
-      this.removeAllListeners();
-    }
-    emitIdle() {
-      for (const handler of this.handlers) handler();
-    }
-  }
-  window.GardenOpsShadeMap = GardenOpsShadeMap;
-})();`;
+const PROVIDER_PATHS = new Set(["/v1/responses"]);
+const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -504,10 +371,7 @@ function respond(pathname, response, requestPayload) {
     return;
   }
   const partial = state.scenario === "partial";
-  if (pathname === SHADEMAP_SDK_LOAD_PATH) {
-    json(response, 200, { fixture: "shademap-sdk-load", status: partial ? "partial" : "ok" });
-    return;
-  }
+
   json(
     response,
     200,
@@ -522,16 +386,7 @@ const server = http.createServer(async (request, response) => {
     json(response, 200, { status: "ok", scenario: state.scenario });
     return;
   }
-  if (request.method === "GET" && pathname === SHADEMAP_RUNTIME_SCRIPT_PATH) {
-    recordRequest(request.method, pathname, { runtime_script: true });
-    response.writeHead(200, {
-      "cache-control": "no-store",
-      "content-type": "application/javascript; charset=utf-8",
-      "x-content-type-options": "nosniff",
-    });
-    response.end(SHADEMAP_RUNTIME_SCRIPT);
-    return;
-  }
+
   if (pathname === "/__fixture__/state" && request.method === "OPTIONS") {
     response.writeHead(204, controlCorsHeaders());
     response.end();
@@ -612,7 +467,6 @@ server.listen({ host: HOST, port: options.port }, () => {
     scenario: options.scenario,
     openai_base_url: `${rootUrl}/v1`,
     fixture_base_url: rootUrl,
-    shademap_sdk_load_url: `${rootUrl}${SHADEMAP_SDK_LOAD_PATH}`,
     state_url: `${rootUrl}/__fixture__/state`,
     control_url: `${rootUrl}/__fixture__/scenario`,
     env: {

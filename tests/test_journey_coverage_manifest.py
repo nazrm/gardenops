@@ -125,7 +125,6 @@ def test_phase_nine_manifest_maps_measured_and_shared_scale_surfaces_to_performa
         "M2",
         "M3",
         "M4",
-        "M5",
         "P1",
         "P2",
         "P4",
@@ -143,12 +142,6 @@ def test_phase_nine_manifest_maps_measured_and_shared_scale_surfaces_to_performa
         assert "tests/test_page_performance_script.py" in evidence_paths
     for journey_id in {"D3", "R1"}:
         assert journeys[journey_id]["performance"] == "not_applicable"
-    assert journeys["C6"]["desktop"] == "proven"
-    assert journeys["C6"]["mobile"] == "proven"
-    assert journeys["C6"]["roles"] == "proven"
-    assert journeys["C6"]["database"] == "proven"
-    assert journeys["C6"]["provider"] == "not_applicable"
-    assert "scripts/e2e/journeys/providersAndTerrain.cjs" in journeys["C6"]["evidence"]["mobile"]
     c4 = journeys["C4"]
     assert {dimension for dimension in DIMENSIONS if c4[dimension] == "proven"} == {
         "desktop",
@@ -158,9 +151,9 @@ def test_phase_nine_manifest_maps_measured_and_shared_scale_surfaces_to_performa
         "database",
     }
     assert c4["performance"] == "not_applicable"
-    assert "scripts/e2e/journeys/providersAndTerrain.cjs" in c4["evidence"]["roles"]
+    assert "scripts/e2e/journeys/providersAndWeather.cjs" in c4["evidence"]["roles"]
     assert journeys["I4"]["roles"] == "proven"
-    assert "scripts/e2e/journeys/providersAndTerrain.cjs" in journeys["I4"]["evidence"]["roles"]
+    assert "scripts/e2e/journeys/providersAndWeather.cjs" in journeys["I4"]["evidence"]["roles"]
     assert journeys["P6"]["provider"] == "not_applicable"
     assert "external catalogue adapters" in journeys["P6"]["notes"]["provider"]
 

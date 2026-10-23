@@ -68,7 +68,6 @@ function makeAuthProfile() {
     auth_type: "session",
     write_access: true,
     language: "en",
-    shademap_available: false,
     mfa_enabled: false,
     mfa_setup_required: false,
     mfa_authenticated: true,
@@ -94,7 +93,6 @@ function makeAuthProfile() {
       "issues",
       "weather",
       "notifications",
-      "shade_map",
       "planner",
       "saved_views",
       "statistics",
@@ -448,15 +446,7 @@ async function main() {
         onboarding_complete: true,
       });
     }
-    if (method === "GET" && path === "/api/gardens/1/lidar") {
-      return fulfillJson(route, {
-        garden_id: 1,
-        available: false,
-        uploaded: false,
-        filename: null,
-        uploaded_at_ms: null,
-      });
-    }
+
     if (method === "GET" && path === "/api/gardens/1/memberships") {
       return fulfillJson(route, { memberships: [] });
     }
@@ -477,15 +467,7 @@ async function main() {
         grid_cols: 8,
       });
     }
-    if (method === "GET" && path === "/api/plots/elevations") {
-      return fulfillJson(route, {
-        available: false,
-        elevations: {},
-        overrides: {},
-        min_m: null,
-        max_m: null,
-      });
-    }
+
     if (method === "GET" && path === "/api/gardens/1/map-objects") {
       return fulfillJson(route, { objects: [mapObject], containers: [] });
     }
