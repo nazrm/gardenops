@@ -191,7 +191,7 @@ cd frontend && npm run build && cd ..
 
 Open `http://localhost:8000`.
 
-Provider keys for OpenAI, Anthropic, PlantNet, and server-side ShadeMap can be
+Provider keys for OpenAI, PlantNet, and server-side ShadeMap can be
 entered later from the platform admin UI. Set `APP_SECRETS_ENCRYPTION_KEY`
 before using admin-managed provider keys; environment provider variables remain
 valid fallbacks.

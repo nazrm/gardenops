@@ -113,7 +113,6 @@ def test_success_and_partial_are_ai_compatible_and_counted(
     fixture_process: FixtureProcess,
 ) -> None:
     openai_url = f"{fixture_process.handoff['openai_base_url']}/responses"
-    anthropic_url = f"{fixture_process.handoff['anthropic_base_url']}/v1/messages"
     payload = json.dumps(
         {
             "input": "do not retain this prompt",
@@ -124,25 +123,19 @@ def test_success_and_partial_are_ai_compatible_and_counted(
     headers = {"Content-Type": "application/json", "Authorization": "Bearer fixture-secret"}
 
     openai_status, openai_body = _request(openai_url, body=payload, headers=headers)
-    anthropic_status, anthropic_body = _request(anthropic_url, body=payload, headers=headers)
 
     assert openai_status == 200
-    assert anthropic_status == 200
     openai = json.loads(openai_body)
-    anthropic = json.loads(anthropic_body)
     expected_status = (
         "incomplete" if fixture_process.handoff["scenario"] == "partial" else "completed"
     )
     assert openai["status"] == expected_status
-    assert anthropic["stop_reason"] == (
-        "max_tokens" if expected_status == "incomplete" else "end_turn"
-    )
 
     state = _state(fixture_process)
     assert state["counts"] == {
-        "provider_requests": 2,
-        "by_path": {"/v1/responses": 1, "/v1/messages": 1},
-        "by_scenario": {fixture_process.handoff["scenario"]: 2},
+        "provider_requests": 1,
+        "by_path": {"/v1/responses": 1},
+        "by_scenario": {fixture_process.handoff["scenario"]: 1},
     }
     serialized = json.dumps(state)
     assert "fixture-secret" not in serialized
@@ -154,15 +147,6 @@ def test_success_and_partial_are_ai_compatible_and_counted(
         {
             "method": "POST",
             "path": "/v1/responses",
-            "request_shape": {
-                "body_kind": "json_object",
-                "content_type": "application/json",
-                "json_keys": ["coordinates", "image", "input"],
-            },
-        },
-        {
-            "method": "POST",
-            "path": "/v1/messages",
             "request_shape": {
                 "body_kind": "json_object",
                 "content_type": "application/json",
@@ -255,7 +239,7 @@ def test_shademap_sdk_success_is_counted_without_retaining_api_key() -> None:
     process = FixtureProcess("success")
     try:
         status, body = _request(
-            f"{process.handoff['anthropic_base_url']}/shademap/sdk/load",
+            f"{process.handoff['fixture_base_url']}/shademap/sdk/load",
             body=b'{"api_key":"shademap-secret-value"}',
             headers={"Content-Type": "application/json"},
         )
@@ -285,7 +269,7 @@ def test_shademap_sdk_success_is_counted_without_retaining_api_key() -> None:
 
 def test_cors_scenario_control_switches_provider_behavior_without_payload_retention() -> None:
     process = FixtureProcess("success")
-    control_url = f"{process.handoff['anthropic_base_url']}/__fixture__/scenario"
+    control_url = f"{process.handoff['fixture_base_url']}/__fixture__/scenario"
     response_url = f"{process.handoff['openai_base_url']}/responses"
     try:
         options_status, options_headers = _options_headers(control_url)
@@ -411,12 +395,11 @@ def test_handoff_is_loopback_only_and_sigterm_closes_the_listener(tmp_path: Path
     assert handoff == json.loads(ready_file.read_text(encoding="utf-8"))
     assert handoff["host"] == "127.0.0.1"
     assert handoff["env"]["OPENAI_BASE_URL"] == handoff["openai_base_url"]
-    assert handoff["env"]["ANTHROPIC_BASE_URL"] == handoff["anthropic_base_url"]
     assert handoff["env"]["GARDENOPS_E2E_PROVIDER_URL"] == handoff["openai_base_url"]
     assert handoff["env"]["GARDENOPS_PROVIDER_FIXTURE_CONTROL_URL"] == handoff["control_url"]
     for raw_url in (
         handoff["openai_base_url"],
-        handoff["anthropic_base_url"],
+        handoff["fixture_base_url"],
         handoff["shademap_sdk_load_url"],
         handoff["state_url"],
         handoff["control_url"],

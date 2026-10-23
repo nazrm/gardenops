@@ -31,7 +31,6 @@ ADMIN_INPUT_KEYS = {
 
 PROVIDER_SECRET_KEYS = (
     "openai_api_key",
-    "anthropic_api_key",
     "plantnet_api_key",
     "shademap_api_key",
 )
@@ -69,7 +68,7 @@ def test_all_reported_accessibility_name_defects_are_covered() -> None:
         + len(ADMIN_INPUT_KEYS)
         + len(PROVIDER_SECRET_KEYS) * 2
         + len(CALENDAR_FILTER_INPUTS)
-    ) == 29
+    ) == 27
 
 
 def test_phase_eight_state_inventory_is_complete_and_machine_readable() -> None:

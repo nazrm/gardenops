@@ -3,6 +3,9 @@
 Baseline: remote main `715557d`, 2026-09-05. Branch: `codex/garden-experience`.
 Status: all 21 deliverables implemented, reviewed and validated; ready for PR.
 
+Historical implementation record: external assistant transport and its receipt
+journey were retired on 2026-10-23. The browser garden workflows remain supported.
+
 ## Outcome And Boundaries
 
 A gardener can find a place, inspect a plant, record what actually happened,

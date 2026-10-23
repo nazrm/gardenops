@@ -646,7 +646,6 @@ async function authorizeSensitiveAdminAction(
 
 const PROVIDER_SECRET_ROWS: Array<{ key: ProviderSecretKey; labelKey: string }> = [
   { key: "openai_api_key", labelKey: "admin.provider_keys.openai" },
-  { key: "anthropic_api_key", labelKey: "admin.provider_keys.anthropic" },
   { key: "plantnet_api_key", labelKey: "admin.provider_keys.plantnet" },
   { key: "shademap_api_key", labelKey: "admin.provider_keys.shademap" },
 ];
@@ -667,7 +666,6 @@ function renderProviderSettingsCard(): string {
   const models = settings?.models ?? {
     openai_model: "",
     openai_fast_model: "",
-    anthropic_model: "",
   };
   const encryptionReady = Boolean(settings?.secrets_encryption_configured);
   return `
@@ -680,7 +678,7 @@ function renderProviderSettingsCard(): string {
       <div class="adm-form-row">
         <label>${t("admin.provider_keys.active_provider")}
           <select id="adm-provider-ai-provider" class="adm-select">
-            ${(["disabled", "openai", "anthropic"] as const).map(provider =>
+            ${(["disabled", "openai"] as const).map(provider =>
               `<option value="${provider}"${settings?.ai_provider === provider ? " selected" : ""}>${t(`admin.provider_keys.provider_${provider}`)}</option>`
             ).join("")}
           </select>
@@ -690,9 +688,6 @@ function renderProviderSettingsCard(): string {
         </label>
         <label>${t("admin.provider_keys.openai_fast_model")}
           <input type="text" id="adm-provider-openai-fast-model" class="adm-input" value="${esc(models.openai_fast_model)}" />
-        </label>
-        <label>${t("admin.provider_keys.anthropic_model")}
-          <input type="text" id="adm-provider-anthropic-model" class="adm-input" value="${esc(models.anthropic_model)}" />
         </label>
       </div>
       <div class="adm-table-wrap">
@@ -2702,7 +2697,6 @@ function wireSection(): void {
     const aiProvider = querySelect("adm-provider-ai-provider")?.value as
       | "disabled"
       | "openai"
-      | "anthropic"
       | undefined;
     const actionReason = await authorizeSensitiveAdminAction(
       t("admin.provider_keys.action_label"),
@@ -2713,7 +2707,6 @@ function wireSection(): void {
       ai_provider: aiProvider,
       openai_model: queryInput("adm-provider-openai-model")?.value.trim() ?? "",
       openai_fast_model: queryInput("adm-provider-openai-fast-model")?.value.trim() ?? "",
-      anthropic_model: queryInput("adm-provider-anthropic-model")?.value.trim() ?? "",
       action_reason: actionReason,
     };
     const updateFields = update as unknown as Record<string, string | boolean | undefined>;

@@ -15563,7 +15563,7 @@ td.inventory-qty-zero {
   color: #2d6a2d;
 }
 
-.source-badge--claude {
+.source-badge--openai {
   background: rgba(107, 92, 231, 0.12);
   color: #6b5ce7;
 }

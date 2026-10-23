@@ -543,32 +543,6 @@ class BaseApiTest(unittest.TestCase):
         headers = self._session_headers(csrf, garden_id=garden_id)
         return client, headers
 
-    @staticmethod
-    def _anthropic_mock_response(
-        tool_name: str,
-        tool_input: dict,
-    ) -> tuple:
-        """Return (mocked_client, response_payload) for Anthropic API."""
-        from unittest.mock import MagicMock
-
-        response_block = type(
-            "ToolBlock",
-            (),
-            {
-                "type": "tool_use",
-                "name": tool_name,
-                "input": tool_input,
-            },
-        )()
-        response_payload = type(
-            "AnthropicResponse",
-            (),
-            {"content": [response_block]},
-        )()
-        mocked_client = MagicMock()
-        mocked_client.messages.create.return_value = response_payload
-        return mocked_client, response_payload
-
     # -- Per-test setup -------------------------------------------------------
 
     def setUp(self) -> None:

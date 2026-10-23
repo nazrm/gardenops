@@ -2942,9 +2942,9 @@ class TestPlots(BaseApiTest):
         self._create_test_user("ai_budget_user", "ai-budget-pass", role="editor")
 
         response_block = type("TextBlock", (), {"type": "text", "text": "Use compost."})()
-        response_payload = type("AnthropicResponse", (), {"content": [response_block]})()
+        response_payload = type("OpenAIResponse", (), {"output_text": response_block.text})()
         mocked_client = MagicMock()
-        mocked_client.messages.create.return_value = response_payload
+        mocked_client.responses.create.return_value = response_payload
 
         with (
             patch.dict(
@@ -2953,15 +2953,15 @@ class TestPlots(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
                     "AI_CHAT_DAILY_BUDGET_USER": "1",
                     "AI_CHAT_DAILY_BUDGET_GARDEN": "5",
                 },
                 clear=False,
             ),
             patch(
-                "gardenops.services.ai_provider.Anthropic",
+                "gardenops.services.ai_provider.OpenAI",
                 return_value=mocked_client,
             ),
         ):

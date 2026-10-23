@@ -141,7 +141,7 @@ def _readable_media_link_sql(
     return (
         f"""
         (
-            {link_alias}.target_type != 'mcp_capture'
+            {link_alias}.target_type IN ('journal_entry', 'plant', 'plot', 'issue', 'harvest_entry')
             AND (
                 {link_alias}.target_type NOT IN ('plant', 'plot')
                 OR %s = 1
@@ -180,7 +180,7 @@ def _media_link_is_readable(
     target_type: str,
     target_id: str,
 ) -> bool:
-    if target_type == "mcp_capture":
+    if target_type not in {"journal_entry", "plant", "plot", "issue", "harvest_entry"}:
         return False
     if target_type == "plant":
         row = db.execute(
@@ -213,6 +213,8 @@ def _media_link_is_mutable(
     target_type: str,
     target_id: str,
 ) -> bool:
+    if target_type not in {"journal_entry", "plant", "plot", "issue", "harvest_entry"}:
+        return False
     if target_type == "plant":
         row = db.execute(
             """
@@ -460,12 +462,6 @@ def _require_asset_mutation_access(
     garden_id: int,
     row: dict[str, Any],
 ) -> None:
-    if _is_local_admin_fallback(context) or _effective_role(context) == "admin":
-        return
-    if context.user_id is None or row["actor_user_id"] is None:
-        raise HTTPException(status_code=404, detail="Media asset not found")
-    if int(row["actor_user_id"]) != int(context.user_id):
-        raise HTTPException(status_code=404, detail="Media asset not found")
     links = db.execute(
         """
         SELECT target_type, target_id
@@ -474,6 +470,17 @@ def _require_asset_mutation_access(
         """,
         (row["asset_id"],),
     ).fetchall()
+    if any(
+        link["target_type"] not in {"journal_entry", "plant", "plot", "issue", "harvest_entry"}
+        for link in links
+    ):
+        raise HTTPException(status_code=404, detail="Media asset not found")
+    if _is_local_admin_fallback(context) or _effective_role(context) == "admin":
+        return
+    if context.user_id is None or row["actor_user_id"] is None:
+        raise HTTPException(status_code=404, detail="Media asset not found")
+    if int(row["actor_user_id"]) != int(context.user_id):
+        raise HTTPException(status_code=404, detail="Media asset not found")
     if not all(
         _media_link_is_mutable(
             db,

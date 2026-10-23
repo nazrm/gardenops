@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -488,9 +489,11 @@ class TestPlants(BaseApiTest):
                 },
             },
         )()
-        response_payload = type("AnthropicResponse", (), {"content": [response_block]})()
+        response_payload = type(
+            "OpenAIResponse", (), {"output_text": json.dumps(response_block.input)}
+        )()
         mocked_client = MagicMock()
-        mocked_client.messages.create.return_value = response_payload
+        mocked_client.responses.create.return_value = response_payload
 
         with (
             patch.dict(
@@ -499,13 +502,13 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
                 },
                 clear=False,
             ),
             patch(
-                "gardenops.services.ai_provider.Anthropic",
+                "gardenops.services.ai_provider.OpenAI",
                 return_value=mocked_client,
             ),
         ):
@@ -533,7 +536,7 @@ class TestPlants(BaseApiTest):
                 "next_cursor": None,
             },
         )
-        mocked_client.messages.create.assert_called_once()
+        mocked_client.responses.create.assert_called_once()
 
         conn = db.get_db()
         try:
@@ -615,8 +618,8 @@ class TestPlants(BaseApiTest):
                         "AUTH_REQUIRED": "true",
                         "AUTH_MODE": "session",
                         "AUTH_API_KEY": "",
-                        "AI_PROVIDER": "anthropic",
-                        "ANTHROPIC_API_KEY": "test-key",
+                        "AI_PROVIDER": "openai",
+                        "OPENAI_API_KEY": "test-key",
                     },
                     clear=False,
                 ),
@@ -754,9 +757,11 @@ class TestPlants(BaseApiTest):
                 },
             },
         )()
-        response_payload = type("AnthropicResponse", (), {"content": [response_block]})()
+        response_payload = type(
+            "OpenAIResponse", (), {"output_text": json.dumps(response_block.input)}
+        )()
         mocked_client = MagicMock()
-        mocked_client.messages.create.return_value = response_payload
+        mocked_client.responses.create.return_value = response_payload
 
         with (
             patch.dict(
@@ -765,13 +770,13 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
                 },
                 clear=False,
             ),
             patch(
-                "gardenops.services.ai_provider.Anthropic",
+                "gardenops.services.ai_provider.OpenAI",
                 return_value=mocked_client,
             ),
         ):
@@ -799,7 +804,7 @@ class TestPlants(BaseApiTest):
                 "next_cursor": "PLT-CARE-2",
             },
         )
-        mocked_client.messages.create.assert_called_once()
+        mocked_client.responses.create.assert_called_once()
 
     def test_generate_missing_care_returns_partial_when_later_batch_fails(self) -> None:
         from gardenops.services.ai_provider import AIProviderError
@@ -877,7 +882,7 @@ class TestPlants(BaseApiTest):
         mock_generate = MagicMock(
             side_effect=[
                 {"PLT-PART-1": care_fields},
-                AIProviderError("provider down", provider="anthropic"),
+                AIProviderError("provider down", provider="openai"),
             ],
         )
 
@@ -888,8 +893,8 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
                     "AI_CARE_BATCH_SIZE": "1",
                 },
                 clear=False,
@@ -989,7 +994,7 @@ class TestPlants(BaseApiTest):
             db.return_db(conn)
 
         mock_generate = MagicMock(
-            side_effect=AIProviderError("provider down", provider="anthropic"),
+            side_effect=AIProviderError("provider down", provider="openai"),
         )
 
         with (
@@ -999,8 +1004,8 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
                     "AI_CARE_BATCH_SIZE": "1",
                 },
                 clear=False,
@@ -1334,15 +1339,15 @@ class TestPlants(BaseApiTest):
                     "AUTH_REQUIRED": "true",
                     "AUTH_MODE": "session",
                     "AUTH_API_KEY": "",
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-key",
                     "AI_CARE_DAILY_BUDGET_USER": "1",
                     "AI_CARE_DAILY_BUDGET_GARDEN": "5",
                 },
                 clear=False,
             ),
             patch(
-                "gardenops.services.ai_provider.Anthropic",
+                "gardenops.services.ai_provider.OpenAI",
                 return_value=mocked_client,
             ),
         ):
@@ -1358,7 +1363,7 @@ class TestPlants(BaseApiTest):
 
         self.assertEqual(response.status_code, 429)
         self.assertIn("daily budget exhausted", response.json()["detail"])
-        mocked_client.messages.create.assert_not_called()
+        mocked_client.responses.create.assert_not_called()
 
     def test_update_plant_empty_body_ok(self) -> None:
         response = self.client.patch(

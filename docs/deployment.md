@@ -106,20 +106,12 @@ The `deploy/` directory contains example files:
 Review and adapt them for your host paths, service user, Python environment,
 TLS termination, proxy topology, upload size, log retention, and backup policy.
 
-MCP runs in the API process and requires no additional service or optional
-dependencies. Configure the private client, actor, active username, and garden
-binding described in [configuration.md](configuration.md#mcp-assistant).
-The production nginx example returns `404` for both `/mcp` and the private
-capture-upload endpoint; clients connect directly over loopback.
-
-When upgrading from a release with a separate assistant worker, stop and disable
-that obsolete service before activation and remove its dedicated credentials and
-private runtime store according to your retention policy. Install the updated
-deployment wrapper so it manages only the API. Configure the new `MCP_*` values
-explicitly if MCP is enabled. Migration 0036 preserves recorded garden data and
-request history, expires old pending proposals, renames source columns, and keeps
-temporary captures private under the new target type. Existing applied migrations
-are retained unchanged so deployed database histories remain valid.
+External assistant transports are no longer shipped. Stop any obsolete assistant
+worker and remove its dedicated host credentials according to your retention
+policy. Existing applied migrations and recorded garden data remain unchanged;
+retired private capture media remains inaccessible through the media API.
+Unsupported AI provider selections stay disabled until an admin explicitly
+selects OpenAI. The OpenAI SDK remains the supported AI integration.
 Set `GARDENOPS_TIMEZONE` explicitly when a non-default observation zone is needed.
 
 ## Atomic Releases

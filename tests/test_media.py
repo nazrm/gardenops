@@ -18,6 +18,35 @@ from tests.base import BaseApiTest, strong_password
 
 
 class TestMedia(BaseApiTest):
+    def test_retired_private_capture_is_not_readable_or_mutable(self) -> None:
+        uploaded = self.client.post(
+            "/api/media/upload?target_type=plant&target_id=PLT-TEST",
+            content=self._image_bytes(),
+            headers={"content-type": "image/png"},
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        body = uploaded.json()
+        conn = db.get_db()
+        try:
+            conn.execute(
+                "UPDATE media_links SET target_type = 'mcp_capture' WHERE asset_id = %s",
+                (body["asset_id"],),
+            )
+            conn.commit()
+        finally:
+            db.return_db(conn)
+        for url in (body["original_url"], body["preview_url"]):
+            self.assertEqual(self.client.get(url).status_code, 404)
+        listed = self.client.get("/api/media")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertNotIn(body["asset_id"], listed.text)
+        self.assertEqual(self.client.delete(f"/api/media/{body['asset_id']}").status_code, 404)
+
+    def test_retired_transport_endpoints_are_not_mounted(self) -> None:
+        for path in ("/mcp", "/api/integrations/mcp/captures"):
+            response = self.client.post(path, json={"jsonrpc": "2.0", "method": "initialize"})
+            self.assertIn(response.status_code, (404, 405), response.text)
+
     def _stepped_up_admin_headers(
         self,
         username: str = "media_cover_admin",

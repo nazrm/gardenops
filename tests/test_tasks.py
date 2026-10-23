@@ -2433,8 +2433,8 @@ class TestTasks(BaseApiTest):
             patch.dict(
                 os.environ,
                 {
-                    "AI_PROVIDER": "anthropic",
-                    "ANTHROPIC_API_KEY": "test-anthropic-key",
+                    "AI_PROVIDER": "openai",
+                    "OPENAI_API_KEY": "test-openai-key",
                     "AI_TASK_DESCRIPTION_CONCURRENCY_LIMIT": "1",
                 },
                 clear=False,

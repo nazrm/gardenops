@@ -1327,15 +1327,15 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         with (
             patch.dict(
                 "os.environ",
-                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"},
                 clear=False,
             ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
+            patch("gardenops.services.ai_provider.OpenAI", return_value=mocked_client),
         ):
             overrides = generate_task_description_overrides([spec], preferred_locale="en")
 
         self.assertEqual(overrides, {})
-        mocked_client.messages.create.assert_not_called()
+        mocked_client.responses.create.assert_not_called()
 
     def test_ai_prompt_skips_work_order_tasks(self) -> None:
         mocked_client = MagicMock()
@@ -1362,15 +1362,15 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         with (
             patch.dict(
                 "os.environ",
-                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"},
                 clear=False,
             ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
+            patch("gardenops.services.ai_provider.OpenAI", return_value=mocked_client),
         ):
             overrides = generate_task_description_overrides([spec], preferred_locale="en")
 
         self.assertEqual(overrides, {})
-        mocked_client.messages.create.assert_not_called()
+        mocked_client.responses.create.assert_not_called()
 
     def test_ai_prompt_uses_preferred_locale_and_full_care_context(self) -> None:
         response_block = type(
@@ -1395,10 +1395,10 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
             },
         )()
         mocked_client = MagicMock()
-        mocked_client.messages.create.return_value = type(
-            "AnthropicResponse",
+        mocked_client.responses.create.return_value = type(
+            "OpenAIResponse",
             (),
-            {"content": [response_block]},
+            {"output_text": json.dumps(response_block.input)},
         )()
 
         spec = {
@@ -1429,10 +1429,10 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         with (
             patch.dict(
                 "os.environ",
-                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"},
                 clear=False,
             ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
+            patch("gardenops.services.ai_provider.OpenAI", return_value=mocked_client),
         ):
             overrides = generate_task_description_overrides([spec], preferred_locale="no")
 
@@ -1443,21 +1443,21 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
                 "Beskjær Glen Ample nå. Hvorfor: det holder fruktveden ung.",
             ),
         )
-        call = mocked_client.messages.create.call_args
+        call = mocked_client.responses.create.call_args
         self.assertIsNotNone(call)
         kwargs = call.kwargs
-        self.assertIn("preferred locale is 'no'", kwargs["messages"][0]["content"])
+        self.assertIn("preferred locale is 'no'", kwargs["input"][0]["content"][0]["text"])
         self.assertIn(
             '"care_soil": "well-drained fertile soil"',
-            kwargs["messages"][0]["content"],
+            kwargs["input"][0]["content"][0]["text"],
         )
         self.assertIn(
             '"care_planting": "sheltered site with support"',
-            kwargs["messages"][0]["content"],
+            kwargs["input"][0]["content"][0]["text"],
         )
         self.assertIn(
             '"care_notes": "renew fruiting canes every year"',
-            kwargs["messages"][0]["content"],
+            kwargs["input"][0]["content"][0]["text"],
         )
 
     def test_ai_prompt_filters_mixed_batches_to_pruning_only(self) -> None:
@@ -1483,10 +1483,10 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
             },
         )()
         mocked_client = MagicMock()
-        mocked_client.messages.create.return_value = type(
-            "AnthropicResponse",
+        mocked_client.responses.create.return_value = type(
+            "OpenAIResponse",
             (),
-            {"content": [response_block]},
+            {"output_text": json.dumps(response_block.input)},
         )()
         specs = [
             {
@@ -1541,10 +1541,10 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
         with (
             patch.dict(
                 "os.environ",
-                {"AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "test-key"},
+                {"AI_PROVIDER": "openai", "OPENAI_API_KEY": "test-key"},
                 clear=False,
             ),
-            patch("gardenops.services.ai_provider.Anthropic", return_value=mocked_client),
+            patch("gardenops.services.ai_provider.OpenAI", return_value=mocked_client),
         ):
             overrides = generate_task_description_overrides(specs, preferred_locale="en")
 
@@ -1557,9 +1557,9 @@ class TestTaskDescriptionOverrides(unittest.TestCase):
                 )
             },
         )
-        call = mocked_client.messages.create.call_args
+        call = mocked_client.responses.create.call_args
         self.assertIsNotNone(call)
-        payload = call.kwargs["messages"][0]["content"]
+        payload = call.kwargs["input"][0]["content"][0]["text"]
         self.assertIn('"task_key": "prune-1"', payload)
         self.assertNotIn('"task_key": "water-1"', payload)
 

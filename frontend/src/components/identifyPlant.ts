@@ -207,7 +207,7 @@ export function showIdentifyPlantModal(cbs: IdentifyPlantCallbacks): void {
         sourceBadge.textContent =
           c.source === "plantnet"
             ? t("identify.source_plantnet")
-            : t("identify.source_claude");
+            : t("identify.source_openai");
         confLabel.append(pctSpan, sourceBadge);
         card.appendChild(confLabel);
 
