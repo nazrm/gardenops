@@ -55,7 +55,10 @@ class TestSunShadeRemoval(BaseApiTest):
             f"/api/gardens/{self._get_default_garden_id()}/lidar",
         ):
             response = self.client.get(path)
-            self.assertEqual(response.status_code, 404, path)
+            # Without built assets, the generic PATCH/DELETE plot route matches
+            # "elevations" and returns 405 rather than the static fallback's 404.
+            expected = (404, 405) if path == "/api/plots/elevations" else (404,)
+            self.assertIn(response.status_code, expected, path)
 
     def test_profile_export_and_providers_no_longer_advertise_shade(self) -> None:
         profile = self.client.get("/api/auth/me")
