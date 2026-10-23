@@ -280,54 +280,6 @@ class TestAuthorizationWriteGates(BaseApiTest):
             db.return_db(conn)
         self.assertEqual(int(row["count"]), 0)
 
-    def test_viewer_cannot_mutate_shademap_state(self) -> None:
-        with patch.dict("os.environ", AUTH_ENV, clear=False):
-            viewer, client, headers = self._viewer_client("shademap_write_gate_viewer")
-            self._give_viewer_seed_ownership(int(viewer["id"]))
-
-            elevation = client.patch(
-                "/api/plots/elevations",
-                headers=headers,
-                json={"overrides": {"B1": 41.0}},
-            )
-            state = client.patch(
-                "/api/shademap/state",
-                headers=headers,
-                json={
-                    "mode": "sun-hours",
-                    "selected_plot_id": "B1",
-                    "analysis_timestamp_ms": 1772443603995,
-                    "preset": "summer",
-                },
-            )
-            calibration = client.patch(
-                "/api/shademap/calibration",
-                headers=headers,
-                json={"enabled": False},
-            )
-            obstacle = client.post(
-                "/api/shademap/obstacles",
-                headers=headers,
-                json={
-                    "kind": "tree",
-                    "plot_id": "B1",
-                    "x": 1.0,
-                    "y": 1.0,
-                    "height_m": 3.0,
-                    "radius_m": 1.0,
-                },
-            )
-
-        self.assertEqual(elevation.status_code, 403, elevation.text)
-        self.assertEqual(state.status_code, 403, state.text)
-        self.assertEqual(calibration.status_code, 403, calibration.text)
-        self.assertEqual(obstacle.status_code, 403, obstacle.text)
-        self.assertEqual(
-            self._rows("SELECT plot_id FROM plot_elevations WHERE plot_id = 'B1'"),
-            [],
-        )
-        self.assertEqual(self._rows("SELECT id FROM shademap_obstacles ORDER BY id"), [])
-
     def test_representative_garden_write_rejects_cross_garden_unauthenticated_and_stale_auth(
         self,
     ) -> None:

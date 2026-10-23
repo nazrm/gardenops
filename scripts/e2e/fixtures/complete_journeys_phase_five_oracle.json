@@ -49,12 +49,12 @@
     },
     "read_side_effects": {
       "exact_counts": {
-        "provider_daily_usage": { "added": 2, "removed": 0 },
-        "shademap_cache": { "added": 2, "removed": 0 }
+        "provider_daily_usage": { "added": 0, "removed": 0 },
+        "shademap_cache": { "added": 0, "removed": 0 }
       },
       "exact_identity_counts": {
-        "provider_daily_usage": { "added": 2, "removed": 0, "updated": 0 },
-        "shademap_cache": { "added": 2, "removed": 0, "updated": 0 }
+        "provider_daily_usage": { "added": 0, "removed": 0, "updated": 0 },
+        "shademap_cache": { "added": 0, "removed": 0, "updated": 0 }
       }
     },
     "auth_state": {

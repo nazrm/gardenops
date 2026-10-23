@@ -46,7 +46,6 @@ export interface AuthUserProfile {
   auth_type: "none" | "session" | "api_key";
   write_access: boolean;
   language: "en" | "no";
-  shademap_available: boolean;
   mfa_enabled: boolean;
   mfa_setup_required: boolean;
   mfa_authenticated: boolean;

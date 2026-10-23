@@ -180,10 +180,9 @@ class TestAdminEdgePolicy(unittest.TestCase):
         generic_ai_block = self._location_block("location ^~ /api/ai/ {")
         self.assertNotIn("client_max_body_size 8m;", generic_ai_block)
 
-        lidar_block = self._location_block("location ~ ^/api/gardens/[0-9]+/lidar$ {")
-        self.assertIn("client_max_body_size 256m;", lidar_block)
-        self.assertIn("limit_req zone=gardenops_upload", lidar_block)
-        self.assertIn("proxy_pass http://gardenops;", lidar_block)
+        template = self.nginx_config
+        self.assertNotIn("/lidar$", template)
+        self.assertNotIn("client_max_body_size 256m;", template)
 
     def test_production_nginx_template_avoids_unbounded_admin_prefixes(self) -> None:
         forbidden_headers = (

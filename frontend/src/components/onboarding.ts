@@ -401,10 +401,6 @@ export function showOnboarding(
             <span>${escapeHtml(t("onboarding.feature_plants_body"))}</span>
           </div>
           <div class="onb-intro-feature">
-            <strong>${escapeHtml(t("onboarding.feature_shade_title"))}</strong>
-            <span>${escapeHtml(t("onboarding.feature_shade_body"))}</span>
-          </div>
-          <div class="onb-intro-feature">
             <strong>${escapeHtml(t("onboarding.feature_analysis_title"))}</strong>
             <span>${escapeHtml(t("onboarding.feature_analysis_body"))}</span>
           </div>

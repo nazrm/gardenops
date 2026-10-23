@@ -193,6 +193,21 @@ def seed_active_garden(conn, *, owner_user_id: int) -> int:
         """,
         (garden_id, owner_user_id),
     )
+    conn.execute(
+        """
+        INSERT INTO plots (
+            plot_id, zone_code, zone_name, plot_number, grid_row, grid_col, garden_id
+        ) VALUES ('E1', 'E', 'Test bed', 1, 1, 1, %s)
+        """,
+        (garden_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO plot_ownership (plot_id, owner_user_id, garden_id)
+        VALUES ('E1', %s, %s)
+        """,
+        (owner_user_id, garden_id),
+    )
     return garden_id
 
 

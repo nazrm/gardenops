@@ -183,7 +183,7 @@ def test_notifications_sync_after_initial_garden_resolution_and_before_open() ->
     refresh_body = _function_body(
         app,
         "async function refreshGardenContext",
-        "function updateShadeMapAvailabilityUi",
+        "function applyFeatureGateUi",
     )
     toggle_body = _function_body(
         notifications,
@@ -259,7 +259,7 @@ def test_mobile_map_sheets_are_inert_when_closed_and_manage_focus() -> None:
     app = _read("frontend/src/app.ts")
     layout = _read("frontend/src/components/layout.ts")
 
-    assert layout.count("data-mobile-map-sheet-initial-focus") == 4
+    assert layout.count("data-mobile-map-sheet-initial-focus") == 3
     assert 'id="mobile-map-layouts-sheet"' in layout
     assert 'id="mobile-map-tools-sheet"' in layout
     assert "inert>" in layout
@@ -276,25 +276,6 @@ def test_mobile_map_editor_opens_an_operable_layers_sheet() -> None:
     assert "editorAvailable: true" in app
     assert 'setMobileMapSheetOpen("map-layers-panel")' in app
     assert 'showToast(t("map.desktop_only")' not in app
-
-
-def test_shademap_context_and_map_focus_do_not_persist_state() -> None:
-    shade_panel = _read("frontend/src/components/shadePanel.ts")
-    context_body = _function_body(
-        shade_panel,
-        "  setGardenContext(context: GardenContext): void",
-        "  setSelectedPlot(plotId: string | null): void",
-    )
-    selection_body = _function_body(
-        shade_panel,
-        "  setSelectedPlot(plotId: string | null): void",
-        "  showError(message: string): void",
-    )
-
-    assert "this.activeTargetId = HOUSE_TARGET_ID;" in context_body
-    assert "this.emitStateChange();" not in context_body
-    assert "this.activeTargetId = plotTargetId(plotId);" in selection_body
-    assert "this.emitStateChange();" not in selection_body
 
 
 def test_north_direction_keeps_rendered_map_metadata_in_sync() -> None:

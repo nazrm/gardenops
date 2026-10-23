@@ -171,6 +171,26 @@ async function sendDeterministicChat(page) {
   assert(await send.isEnabled(), "Analysis send control was not reenabled after the response");
 }
 
+async function assertMapWithoutRetiredShade(page, mobile = false) {
+  await page.locator(mobile ? "#mobile-tab-map" : '[data-tab="map"]:visible').first().click();
+  await page.locator("#map-viewport").waitFor({ state: "visible" });
+  assert(await page.locator("#shade-panel, #mobile-map-shade-btn, #map-layer-elevation-section").count() === 0,
+    "Retired sun/shade controls are still present");
+  const geometry = await page.locator("#map-viewport").boundingBox();
+  assert(geometry && geometry.width > 200 && geometry.height > 150,
+    "Removing the shade panel collapsed the garden map");
+  await page.locator('#map-grid .plot[data-plot-id="E1"]').waitFor({ state: "visible" });
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+    "Garden map overflows the viewport");
+  if (mobile) {
+    await page.locator("#mobile-map-layers-btn").click();
+    await page.locator("#map-layers-panel.mobile-map-sheet--open").waitFor({ state: "visible" });
+    await page.locator("#mobile-map-layers-close-btn").click();
+  } else {
+    await page.locator("#attention-today-panel").waitFor({ state: "visible" });
+  }
+}
+
 async function main() {
   assertNoResponseMocks();
   assertLoopbackBaseUrl();
@@ -211,16 +231,19 @@ async function main() {
       return { body: await response.json(), status: response.status };
     });
     assert(profile.status === 200, `/api/auth/me returned ${profile.status}`);
+    assert(!("shademap_available" in profile.body), "Profile still advertises ShadeMap");
     assert(profile.body.garden_id === before.garden.id, "Signed-in user did not get the seeded garden");
     assert(
       Array.isArray(profile.body.allowed_features) && profile.body.allowed_features.includes("planner"),
       "Signed-in user did not receive the planner feature",
     );
 
+    await assertMapWithoutRetiredShade(page);
     await sendDeterministicChat(page);
     await page.setViewportSize({ height: 844, width: 390 });
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator("#mobile-tab-insights").waitFor({ state: "visible", timeout: 10000 });
+    await assertMapWithoutRetiredShade(page, true);
     await sendDeterministicChat(page);
 
     const after = dataSnapshot();

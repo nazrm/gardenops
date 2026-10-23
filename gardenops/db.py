@@ -38,9 +38,6 @@ if TYPE_CHECKING:
 else:
     DbConn = psycopg.Connection[DbRow]
 
-SHADEMAP_MODES = ("shadow", "sun-hours")
-SHADEMAP_PRESETS = ("now", "custom", "spring", "summer", "autumn", "winter")
-SHADEMAP_OBSTACLE_KINDS = ("tree", "structure")
 _DEFAULT_GARDEN_SLUG = "default"
 _DEFAULT_GARDEN_NAME = "Default Garden"
 
@@ -331,38 +328,6 @@ def _raise_incomplete_bootstrap_schema(diagnostics: dict[str, object]) -> None:
 
 def current_timestamp_ms() -> int:
     return int(time.time() * 1000)
-
-
-def default_shademap_state() -> dict[str, object]:
-    return {
-        "mode": "shadow",
-        "selected_plot_id": None,
-        "analysis_timestamp_ms": current_timestamp_ms(),
-        "preset": "now",
-    }
-
-
-def default_shademap_calibration() -> dict[str, object]:
-    return {
-        "enabled": False,
-        "calibration_type": "house-corners",
-        "origin_grid_col": None,
-        "origin_grid_row": None,
-        "origin_latitude": None,
-        "origin_longitude": None,
-        "axis_grid_col": None,
-        "axis_grid_row": None,
-        "axis_latitude": None,
-        "axis_longitude": None,
-        "house_nw_latitude": None,
-        "house_nw_longitude": None,
-        "house_ne_latitude": None,
-        "house_ne_longitude": None,
-        "house_se_latitude": None,
-        "house_se_longitude": None,
-        "house_sw_latitude": None,
-        "house_sw_longitude": None,
-    }
 
 
 # ---------------------------------------------------------------------------

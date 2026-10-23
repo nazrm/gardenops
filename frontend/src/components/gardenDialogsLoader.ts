@@ -6,7 +6,6 @@ type ShowCreateZoneDialogParams = Parameters<OverlaysModule["showCreateZoneDialo
 type ShowCreatePlantDialogParams = Parameters<OverlaysModule["showCreatePlantDialog"]>[0];
 type ShowEditPlantDialogParams = Parameters<OverlaysModule["showEditPlantDialog"]>[0];
 type ShowEditPlotDialogParams = Parameters<OverlaysModule["showEditPlotDialog"]>[0];
-type ShowElevationEditorParams = Parameters<OverlaysModule["showElevationEditor"]>[0];
 
 let overlaysModulePromise: Promise<OverlaysModule> | null = null;
 
@@ -45,8 +44,4 @@ export function showEditPlantDialogLazy(params: ShowEditPlantDialogParams): void
 
 export function showEditPlotDialogLazy(params: ShowEditPlotDialogParams): void {
   void loadOverlaysModule().then((mod) => mod.showEditPlotDialog(params)).catch(reportOverlayLoadError);
-}
-
-export function showElevationEditorLazy(params: ShowElevationEditorParams): void {
-  void loadOverlaysModule().then((mod) => mod.showElevationEditor(params)).catch(reportOverlayLoadError);
 }

@@ -30,56 +30,6 @@ class LayoutStateBody(HouseState):
     grid_cols: int = Field(default=22, ge=5, le=100)
 
 
-ShadeMapMode = Literal["shadow", "sun-hours"]
-ShadeMapPreset = Literal["now", "custom", "spring", "summer", "autumn", "winter"]
-
-
-class ShadeMapStateBody(StrictBaseModel):
-    mode: ShadeMapMode = "shadow"
-    selected_plot_id: str | None = None
-    analysis_timestamp_ms: int = Field(ge=0)
-    preset: ShadeMapPreset = "now"
-
-
-ShadeMapObstacleKind = Literal["tree", "structure"]
-
-
-class ShadeMapCalibrationBody(StrictBaseModel):
-    enabled: bool = False
-    calibration_type: Literal["two-point", "house-corners"] = "house-corners"
-    origin_grid_col: float | None = None
-    origin_grid_row: float | None = None
-    origin_latitude: float | None = None
-    origin_longitude: float | None = None
-    axis_grid_col: float | None = None
-    axis_grid_row: float | None = None
-    axis_latitude: float | None = None
-    axis_longitude: float | None = None
-    house_nw_latitude: float | None = None
-    house_nw_longitude: float | None = None
-    house_ne_latitude: float | None = None
-    house_ne_longitude: float | None = None
-    house_se_latitude: float | None = None
-    house_se_longitude: float | None = None
-    house_sw_latitude: float | None = None
-    house_sw_longitude: float | None = None
-
-
-class ShadeMapObstacleBody(StrictBaseModel):
-    label: str = Field(min_length=1, max_length=120)
-    kind: ShadeMapObstacleKind = "tree"
-    linked_plot_id: str | None = None
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
-    height_m: float = Field(gt=0)
-    crown_radius_m: float = Field(gt=0)
-    active: bool = True
-
-
-class ShadeMapObstacleImportItem(ShadeMapObstacleBody):
-    id: int | None = Field(default=None, ge=1)
-
-
 class ImportedLayoutStateBody(HouseState):
     north_degrees: int | None = Field(default=None, ge=0, le=359)
     direction: str | None = Field(default=None, pattern="^(north|east|south|west)$")
@@ -233,26 +183,23 @@ class MapObjectImportItem(StrictBaseModel):
 
 
 class LayoutExportBody(StrictBaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def discard_retired_shade_fields(cls, value: object) -> object:
+        # Older exports remain importable; only these retired fields are ignored.
+        if isinstance(value, dict):
+            return {
+                key: item
+                for key, item in value.items()
+                if key not in {"shademap", "shademap_calibration", "shademap_obstacles"}
+            }
+        return value
+
     schema_version: Literal[1, 2] = 1
     plots: list[PlotImportItem] = Field(min_length=1, max_length=1000)
     house: ImportedLayoutStateBody | None = None
-    shademap: ShadeMapStateBody | None = None
-    shademap_calibration: ShadeMapCalibrationBody | None = None
-    shademap_obstacles: list[ShadeMapObstacleImportItem] | None = Field(
-        default=None,
-        max_length=500,
-    )
     map_objects: list[MapObjectImportItem] | None = Field(default=None, max_length=200)
 
 
-class ImportBody(StrictBaseModel):
-    schema_version: Literal[1, 2] = 1
-    plots: list[PlotImportItem] = Field(min_length=1, max_length=1000)
-    house: ImportedLayoutStateBody | None = None
-    shademap: ShadeMapStateBody | None = None
-    shademap_calibration: ShadeMapCalibrationBody | None = None
-    shademap_obstacles: list[ShadeMapObstacleImportItem] | None = Field(
-        default=None,
-        max_length=500,
-    )
-    map_objects: list[MapObjectImportItem] | None = Field(default=None, max_length=200)
+class ImportBody(LayoutExportBody):
+    pass

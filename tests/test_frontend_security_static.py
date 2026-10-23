@@ -132,17 +132,6 @@ class FrontendSecurityStaticTests(unittest.TestCase):
         self.assertIn('if (tab === "admin") return true;', app)
         self.assertIn('mobileAdminBtn.hidden = !isTabEnabled("admin")', app)
 
-    def test_garden_settings_do_not_fetch_gated_lidar(self) -> None:
-        panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('const lidarCard = isFeatureEnabled("shade_map") ?', panel)
-        self.assertRegex(
-            panel,
-            r'isFeatureEnabled\("shade_map"\)\s*\? getGardenLidarApi\(requestGardenId\)'
-            r"\s*: Promise\.resolve\(null\)",
-        )
-
     def test_membership_mutations_refresh_capabilities(self) -> None:
         panel = (ROOT / "frontend" / "src" / "components" / "adminPanel.ts").read_text(
             encoding="utf-8"
@@ -197,15 +186,6 @@ class FrontendSecurityStaticTests(unittest.TestCase):
             )
             self.assertIsNotNone(match, function_name)
             self.assertIn("encodeApiPathSegment", match.group("body"))
-
-    def test_shademap_tooltip_does_not_bind_raw_label_as_html(self) -> None:
-        shade_panel = (ROOT / "frontend" / "src" / "components" / "shadePanel.ts").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("bindTooltip(target.label", shade_panel)
-        self.assertNotIn('bindTooltip(t("shade.house_center"', shade_panel)
-        self.assertIn("tooltipLabel.textContent = target.label", shade_panel)
-        self.assertIn("houseTooltipLabel.textContent", shade_panel)
 
 
 if __name__ == "__main__":

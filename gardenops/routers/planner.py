@@ -35,21 +35,16 @@ def planner_suggestions(
     plot_id: str | None = Query(None),
     goal: PlannerGoal | None = Query(None),
     limit: int = Query(10, ge=1, le=50),
-    sunlit_plot_ids: str | None = Query(None),
 ) -> dict:
     """Get planting suggestions for empty plots."""
     context = _auth_context(request)
     garden_id = _active_garden_id(context)
-    sunlit_ids = {
-        item.strip() for item in (sunlit_plot_ids or "").split(",") if item.strip()
-    } or None
     return get_planting_suggestions(
         conn,
         garden_id,
         target_plot_id=plot_id,
         goal=goal,
         limit=limit,
-        sunlit_plot_ids=sunlit_ids,
     )
 
 

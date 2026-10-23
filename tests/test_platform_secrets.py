@@ -128,7 +128,7 @@ class PlatformSecretsTests(unittest.TestCase):
 
         with patch.dict("os.environ", {"APP_SECRETS_ENCRYPTION_KEY": ""}, clear=False):
             with self.assertRaises(ConfigurationError):
-                set_database_secret(conn, "shademap_api_key", "shademap test key 9999")
+                set_database_secret(conn, "plantnet_api_key", "plantnet test key 9999")
 
         with patch.dict(
             "os.environ",
@@ -136,7 +136,7 @@ class PlatformSecretsTests(unittest.TestCase):
             clear=False,
         ):
             with self.assertRaises(ConfigurationError):
-                set_database_secret(conn, "shademap_api_key", "shademap test key 9999")
+                set_database_secret(conn, "plantnet_api_key", "plantnet test key 9999")
 
         self.assertEqual(conn.rows, {})
 

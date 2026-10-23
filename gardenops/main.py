@@ -50,7 +50,6 @@ from gardenops.db import (  # noqa: E402
     close_pool,
     db_foreign_key_violations,
     db_quick_check,
-    default_shademap_state,
     get_db,
     init_db,
     return_db,
@@ -72,7 +71,6 @@ from gardenops.observability import (  # noqa: E402
     normalize_request_id,
     reset_request_context,
 )
-from gardenops.provider_settings import shademap_enabled  # noqa: E402
 from gardenops.rate_limit import (  # noqa: E402
     client_ip,
     enforce_rate_limit,
@@ -126,20 +124,6 @@ from gardenops.routers.plots import router as plots_router  # noqa: E402
 from gardenops.routers.procurement import router as procurement_router  # noqa: E402
 from gardenops.routers.provider_settings import router as provider_settings_router  # noqa: E402
 from gardenops.routers.saved_views import router as saved_views_router  # noqa: E402
-from gardenops.routers.shademap import (  # noqa: E402
-    asset_router as shademap_asset_router,
-)
-from gardenops.routers.shademap import (  # noqa: E402
-    get_shademap_calibration,
-    get_shademap_state,
-    list_shademap_obstacles,
-    replace_shademap_obstacles,
-    set_shademap_calibration,
-    set_shademap_state,
-)
-from gardenops.routers.shademap import (  # noqa: E402
-    router as shademap_router,
-)
 from gardenops.routers.statistics import router as statistics_router  # noqa: E402
 from gardenops.routers.tasks import router as tasks_router  # noqa: E402
 from gardenops.routers.weather import router as weather_router  # noqa: E402
@@ -835,7 +819,6 @@ def _api_docs_enabled() -> bool:
 
 
 def _validate_runtime_security_config() -> None:
-    shademap_enabled()
     _validate_shared_rate_limit_backend()
     strict_cookie_mode = _is_internet_exposed() or _is_production()
     if strict_cookie_mode:
@@ -1060,8 +1043,6 @@ def _max_body_bytes_for_path(path: str) -> int:
 
 
 def _request_timeout_seconds(path: str) -> float:
-    if path.startswith("/shademap/terrain/"):
-        return float(env_int("TERRAIN_REQUEST_TIMEOUT_SECONDS", 20))
     return float(env_int("API_REQUEST_TIMEOUT_SECONDS", 30))
 
 
@@ -1086,7 +1067,6 @@ _MUTATION_METRIC_BUCKETS = {
     "provider-settings",
     "saved-views",
     "security",
-    "shademap",
     "snapshots",
     "statistics",
     "tasks",
@@ -1101,23 +1081,6 @@ def _mutation_metric_bucket(path: str) -> str:
     if segment not in _MUTATION_METRIC_BUCKETS:
         return "other"
     return "".join(char if char.isalnum() else "_" for char in segment)
-
-
-def _shademap_import_fields_present(
-    *,
-    shademap: object | None,
-    shademap_calibration: object | None,
-    shademap_obstacles: object | None,
-) -> bool:
-    return (
-        shademap is not None or shademap_calibration is not None or shademap_obstacles is not None
-    )
-
-
-def _require_shademap_import_allowed(subscription_tier: str, *, detail: str) -> None:
-    if feature_allowed(subscription_tier, "shade_map"):
-        return
-    raise HTTPException(status_code=403, detail=detail)
 
 
 def _admin_mfa_setup_path_allowed(path: str) -> bool:
@@ -1207,29 +1170,12 @@ def _csp_policy() -> str:
         "'self'",
     ]
     image_src = ["'self'", "data:", "blob:"]
-    if shademap_enabled():
-        connect_src.extend(
-            [
-                "https://shademap.app",
-                "https://overpass-api.de",
-                "https://overpass.kumi.systems",
-                "https://overpass.private.coffee",
-                "https://s3.amazonaws.com",
-            ],
-        )
-        image_src.extend(
-            [
-                "https://*.amazonaws.com",
-                "https://*.shademap.app",
-                "https://*.tile.openstreetmap.org",
-            ]
-        )
     report_uri = _csp_report_uri()
     directives = [
         "default-src 'self'",
         "script-src 'self'",
         "require-trusted-types-for 'script'",
-        "trusted-types gardenops-html gardenops-shademap-script default",
+        "trusted-types gardenops-html default",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         f"img-src {' '.join(image_src)}",
         f"connect-src {' '.join(connect_src)}",
@@ -1332,10 +1278,6 @@ async def lifespan(_: FastAPI):
     start_security_telemetry_exporter()
     scheduler_task: asyncio.Task[None] | None = None
 
-    from gardenops.routers.shademap import _load_grid_from_db, _save_grid_to_db
-    from gardenops.services.lidar_terrain import set_grid_cache_callbacks
-
-    set_grid_cache_callbacks(_load_grid_from_db, _save_grid_to_db)
     if notification_scheduler_enabled():
         scheduler_task = asyncio.create_task(
             _notification_scheduler_loop(),
@@ -1383,8 +1325,6 @@ app.add_middleware(
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())
 
-app.include_router(shademap_router, prefix="/api")
-app.include_router(shademap_asset_router)
 app.include_router(auth_router, prefix="/api")
 app.include_router(gardens_router, prefix="/api")
 app.include_router(plots_router, prefix="/api")
@@ -1425,11 +1365,7 @@ async def edge_origin_guard(request: Request, call_next):  # type: ignore[no-unt
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
     path = request.url.path
-    protected = (
-        path.startswith("/api")
-        or path.startswith("/shademap/terrain/")
-        or path == "/shademap/runtime.js"
-    )
+    protected = path.startswith("/api")
     public_auth_paths = {
         "/api/health",
         "/api/version",
@@ -1525,11 +1461,7 @@ async def auth_guard(request: Request, call_next):  # type: ignore[no-untyped-de
                         auth_context = validate_request_auth(request, conn=conn)
                     else:
                         auth_context = validate_request_auth(request)
-                    if path != "/api/security/csp-report" and (
-                        path.startswith("/api")
-                        or path.startswith("/shademap/terrain/")
-                        or path == "/shademap/runtime.js"
-                    ):
+                    if path != "/api/security/csp-report" and (path.startswith("/api")):
                         if conn is None:
                             conn = get_db()
                         auth_context = resolve_garden_context(conn, request, auth_context)
@@ -2485,9 +2417,6 @@ def snapshot_layout(
         "schema_version": 2,
         "plots": [dict(r) for r in rows],
         "house": get_layout_state(db, garden_id),
-        "shademap": get_shademap_state(db, garden_id=garden_id),
-        "shademap_calibration": get_shademap_calibration(db, garden_id=garden_id),
-        "shademap_obstacles": list_shademap_obstacles(db, garden_id=garden_id),
         "map_objects": map_objects,
     }
     return json.dumps(payload)
@@ -2500,9 +2429,6 @@ def restore_snapshot_data(
     garden_id: int,
     owner_user_id: int,
     house: dict[str, object] | None = None,
-    shademap: dict[str, object] | None = None,
-    shademap_calibration: dict[str, object] | None = None,
-    shademap_obstacles: list[dict[str, object]] | None = None,
     map_objects: list[dict[str, Any]] | None = None,
     schema_version: int | None = None,
     manage_transaction: bool = True,
@@ -2730,25 +2656,6 @@ def restore_snapshot_data(
             "UPDATE gardens SET grid_rows = %s, grid_cols = %s WHERE id = %s",
             (updated_house["grid_rows"], updated_house["grid_cols"], garden_id),
         )
-        if shademap is None:
-            set_shademap_state(db, default_shademap_state(), garden_id=garden_id)
-        else:
-            set_shademap_state(
-                db,
-                {
-                    "mode": shademap["mode"],
-                    "selected_plot_id": shademap.get("selected_plot_id"),
-                    "analysis_timestamp_ms": _coerce_required_int(
-                        shademap["analysis_timestamp_ms"],
-                    ),
-                    "preset": shademap["preset"],
-                },
-                garden_id=garden_id,
-            )
-        if shademap_calibration is not None:
-            set_shademap_calibration(db, shademap_calibration, garden_id=garden_id)
-        if shademap_obstacles is not None:
-            replace_shademap_obstacles(db, shademap_obstacles, garden_id=garden_id)
         if map_objects is None:
             _ensure_garden_map_objects_fit_grid(
                 db,
@@ -2815,13 +2722,10 @@ def parse_layout_payload(
     int,
     list[dict[str, Any]],
     dict[str, Any] | None,
-    dict[str, Any] | None,
-    dict[str, Any] | None,
-    list[dict[str, Any]] | None,
     list[dict[str, Any]] | None,
 ]:
     if isinstance(raw, list):
-        return 1, cast(list[dict[str, Any]], raw), None, None, None, None, None
+        return 1, cast(list[dict[str, Any]], raw), None, None
     if isinstance(raw, dict):
         payload = cast(dict[str, object], raw)
         schema_version = payload.get("schema_version", 1)
@@ -2829,22 +2733,12 @@ def parse_layout_payload(
             raise HTTPException(status_code=400, detail="Unsupported layout schema version")
         plots = payload.get("plots")
         house = payload.get("house")
-        shademap = payload.get("shademap")
-        shademap_calibration = payload.get("shademap_calibration")
-        shademap_obstacles = payload.get("shademap_obstacles")
         map_objects = payload.get("map_objects")
         if isinstance(plots, list):
             return (
                 int(schema_version),
                 cast(list[dict[str, Any]], plots),
                 cast(dict[str, Any], house) if isinstance(house, dict) else None,
-                cast(dict[str, Any], shademap) if isinstance(shademap, dict) else None,
-                cast(dict[str, Any], shademap_calibration)
-                if isinstance(shademap_calibration, dict)
-                else None,
-                cast(list[dict[str, Any]], shademap_obstacles)
-                if isinstance(shademap_obstacles, list)
-                else None,
                 cast(list[dict[str, Any]], map_objects) if isinstance(map_objects, list) else None,
             )
     raise HTTPException(status_code=400, detail="Invalid layout payload")
@@ -2955,20 +2849,8 @@ def restore_snapshot(
         schema_version,
         plots,
         house,
-        shademap,
-        shademap_calibration,
-        shademap_obstacles,
         map_objects,
     ) = parse_layout_payload(json.loads(row["data"]))
-    if _shademap_import_fields_present(
-        shademap=shademap,
-        shademap_calibration=shademap_calibration,
-        shademap_obstacles=shademap_obstacles,
-    ):
-        _require_shademap_import_allowed(
-            context.subscription_tier,
-            detail="ShadeMap snapshot restore fields require the shade_map feature",
-        )
     media_storage_pairs: list[tuple[str, str]] = []
     try:
         count = restore_snapshot_data(
@@ -2977,9 +2859,6 @@ def restore_snapshot(
             garden_id=garden_id,
             owner_user_id=owner_user_id,
             house=house,
-            shademap=shademap,
-            shademap_calibration=shademap_calibration,
-            shademap_obstacles=shademap_obstacles,
             map_objects=map_objects,
             schema_version=schema_version,
             manage_transaction=False,
@@ -3082,15 +2961,6 @@ def export_plots(db: DB, request: Request) -> Response:
 def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
     context, action_reason = enforce_destructive_admin_controls(request)
     garden_id = _active_garden_id(request)
-    if _shademap_import_fields_present(
-        shademap=body.shademap,
-        shademap_calibration=body.shademap_calibration,
-        shademap_obstacles=body.shademap_obstacles,
-    ):
-        _require_shademap_import_allowed(
-            context.subscription_tier,
-            detail="ShadeMap import fields require the shade_map feature",
-        )
     owner_user_id = _owner_user_for_garden(
         db,
         garden_id=garden_id,
@@ -3102,15 +2972,6 @@ def import_plots(body: ImportBody, db: DB, request: Request) -> dict:
         garden_id=garden_id,
         owner_user_id=owner_user_id,
         house=body.house.model_dump() if body.house else None,
-        shademap=body.shademap.model_dump() if body.shademap else None,
-        shademap_calibration=(
-            body.shademap_calibration.model_dump() if body.shademap_calibration else None
-        ),
-        shademap_obstacles=(
-            [item.model_dump() for item in body.shademap_obstacles]
-            if body.shademap_obstacles is not None
-            else None
-        ),
         map_objects=(
             [item.model_dump() for item in body.map_objects]
             if body.map_objects is not None

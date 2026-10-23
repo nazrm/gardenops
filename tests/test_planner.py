@@ -339,17 +339,12 @@ class TestPlannerApi(BaseApiTest):
         self.assertEqual(len(data["plots"]), 1)
         self.assertEqual(data["plots"][0]["plot_id"], "B2")
 
-    def test_planner_suggestions_use_sunlight_snapshot(self) -> None:
-        """Direct-sun snapshots should reward sun-loving candidates on that plot."""
+    def test_retired_sunlight_parameter_does_not_change_suggestions(self) -> None:
+        """Stale clients cannot influence suggestions with retired shade state."""
+        baseline = self.client.get("/api/planner/suggestions?plot_id=B2")
         resp = self.client.get("/api/planner/suggestions?plot_id=B2&sunlit_plot_ids=B2")
         self.assertEqual(resp.status_code, 200)
-        suggestions = resp.json()["plots"][0]["suggestions"]
-
-        planner = next(s for s in suggestions if s["plt_id"] == "PLT-PLANNER")
-        shade = next(s for s in suggestions if s["plt_id"] == "PLT-SHADE")
-
-        self.assertGreater(planner["score"], shade["score"])
-        self.assertTrue(any("sunlit snapshot" in reason.lower() for reason in planner["reasons"]))
+        self.assertEqual(resp.json(), baseline.json())
 
     def test_planner_suggestions_apply_succession_rotation(self) -> None:
         """Recent harvests should prefer rotating into a different category."""

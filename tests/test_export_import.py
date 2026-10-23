@@ -84,42 +84,6 @@ class TestExportImport(BaseApiTest):
             "/api/layout-state",
             json={"row": 3, "col": 4, "width": 9, "height": 6, "north_degrees": 181},
         )
-        self.client.patch(
-            "/api/shademap/state",
-            json={
-                "mode": "sun-hours",
-                "selected_plot_id": "B1",
-                "analysis_timestamp_ms": 1772443603995,
-                "preset": "autumn",
-            },
-        )
-        self.client.patch(
-            "/api/shademap/calibration",
-            json={
-                "enabled": True,
-                "origin_grid_col": 6.5,
-                "origin_grid_row": 9.5,
-                "origin_latitude": 51.50095,
-                "origin_longitude": -0.12448,
-                "axis_grid_col": 14.5,
-                "axis_grid_row": 9.5,
-                "axis_latitude": 51.50095,
-                "axis_longitude": -0.12472,
-            },
-        )
-        self.client.post(
-            "/api/shademap/obstacles",
-            json={
-                "label": "Walnut tree",
-                "kind": "tree",
-                "linked_plot_id": "B2",
-                "latitude": 51.50088,
-                "longitude": -0.12438,
-                "height_m": 6.0,
-                "crown_radius_m": 2.8,
-                "active": True,
-            },
-        )
         save_res = self.client.post(
             "/api/snapshots",
             json={"name": "test-snap"},
@@ -207,24 +171,6 @@ class TestExportImport(BaseApiTest):
                 "grid_cols": 22,
             },
         )
-        shademap = self.client.get("/api/shademap/state")
-        self.assertEqual(shademap.status_code, 200)
-        self.assertEqual(
-            shademap.json(),
-            {
-                "mode": "sun-hours",
-                "selected_plot_id": "B1",
-                "analysis_timestamp_ms": 1772443603995,
-                "preset": "autumn",
-            },
-        )
-        calibration = self.client.get("/api/shademap/calibration")
-        self.assertEqual(calibration.status_code, 200)
-        self.assertEqual(calibration.json()["enabled"], True)
-        obstacles = self.client.get("/api/shademap/obstacles")
-        self.assertEqual(obstacles.status_code, 200)
-        self.assertEqual(len(obstacles.json()), 1)
-        self.assertEqual(obstacles.json()[0]["label"], "Walnut tree")
 
         with patch.dict(
             os.environ,
@@ -461,42 +407,6 @@ class TestExportImport(BaseApiTest):
             "/api/layout-state",
             json={"row": 2, "col": 3, "width": 8, "height": 5, "north_degrees": 274},
         )
-        self.client.patch(
-            "/api/shademap/state",
-            json={
-                "mode": "sun-hours",
-                "selected_plot_id": "B2",
-                "analysis_timestamp_ms": 1772443603995,
-                "preset": "winter",
-            },
-        )
-        self.client.patch(
-            "/api/shademap/calibration",
-            json={
-                "enabled": True,
-                "origin_grid_col": 6.5,
-                "origin_grid_row": 9.5,
-                "origin_latitude": 51.50095,
-                "origin_longitude": -0.12448,
-                "axis_grid_col": 12.5,
-                "axis_grid_row": 9.5,
-                "axis_latitude": 51.50095,
-                "axis_longitude": -0.12465,
-            },
-        )
-        self.client.post(
-            "/api/shademap/obstacles",
-            json={
-                "label": "Apple tree",
-                "kind": "tree",
-                "linked_plot_id": "B1",
-                "latitude": 51.50091,
-                "longitude": -0.12439,
-                "height_m": 5.0,
-                "crown_radius_m": 2.2,
-                "active": True,
-            },
-        )
         response = self.client.get("/api/plots/export")
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.content)
@@ -532,18 +442,6 @@ class TestExportImport(BaseApiTest):
                 "grid_cols": 22,
             },
         )
-        self.assertEqual(
-            data["shademap"],
-            {
-                "mode": "sun-hours",
-                "selected_plot_id": "B2",
-                "analysis_timestamp_ms": 1772443603995,
-                "preset": "winter",
-            },
-        )
-        self.assertEqual(data["shademap_calibration"]["enabled"], True)
-        self.assertEqual(len(data["shademap_obstacles"]), 1)
-        self.assertEqual(data["shademap_obstacles"][0]["label"], "Apple tree")
 
     def test_import_rejects_unsupported_schema_version_without_writes(self) -> None:
         before = self.client.get("/api/plots").json()
@@ -609,42 +507,6 @@ class TestExportImport(BaseApiTest):
                 "grid_cols": 39,
             },
         )
-        self.client.patch(
-            "/api/shademap/state",
-            json={
-                "mode": "sun-hours",
-                "selected_plot_id": "B1",
-                "analysis_timestamp_ms": 1772443603995,
-                "preset": "spring",
-            },
-        )
-        self.client.patch(
-            "/api/shademap/calibration",
-            json={
-                "enabled": True,
-                "origin_grid_col": 6.5,
-                "origin_grid_row": 9.5,
-                "origin_latitude": 51.50095,
-                "origin_longitude": -0.12448,
-                "axis_grid_col": 12.5,
-                "axis_grid_row": 9.5,
-                "axis_latitude": 51.50095,
-                "axis_longitude": -0.12465,
-            },
-        )
-        self.client.post(
-            "/api/shademap/obstacles",
-            json={
-                "label": "Cherry tree",
-                "kind": "tree",
-                "linked_plot_id": "B1",
-                "latitude": 51.50092,
-                "longitude": -0.12441,
-                "height_m": 4.9,
-                "crown_radius_m": 1.9,
-                "active": True,
-            },
-        )
         export_res = self.client.get("/api/plots/export")
         exported = json.loads(export_res.content)
 
@@ -666,16 +528,6 @@ class TestExportImport(BaseApiTest):
         house = self.client.get("/api/layout-state")
         self.assertEqual(house.status_code, 200)
         self.assertEqual(house.json(), exported["house"])
-        shademap = self.client.get("/api/shademap/state")
-        self.assertEqual(shademap.status_code, 200)
-        self.assertEqual(shademap.json(), exported["shademap"])
-        calibration = self.client.get("/api/shademap/calibration")
-        self.assertEqual(calibration.status_code, 200)
-        self.assertEqual(calibration.json(), exported["shademap_calibration"])
-        obstacles = self.client.get("/api/shademap/obstacles")
-        self.assertEqual(obstacles.status_code, 200)
-        self.assertEqual(len(obstacles.json()), 1)
-        self.assertEqual(obstacles.json()[0]["label"], "Cherry tree")
 
     def test_import_plots_preserves_existing_plot_owner(self) -> None:
         conn = db.get_db()

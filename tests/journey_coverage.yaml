@@ -195,7 +195,7 @@ journeys:
     evidence: &phase_seven_provider_settings_evidence
       desktop: &phase_seven_provider_settings_browser
         - scripts/check_complete_journeys_e2e.cjs
-        - scripts/e2e/journeys/providersAndTerrain.cjs
+        - scripts/e2e/journeys/providersAndWeather.cjs
         - scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json
         - tests/test_complete_journey_e2e_scripts.py
       mobile: *phase_seven_provider_settings_browser
@@ -227,32 +227,6 @@ journeys:
       provider: Session revocation does not call an external provider.
       filesystem: Session revocation has no supported file side effect.
       performance: This low-volume session operation has no independent scale-sensitive performance boundary.
-  - <<: *open_journey
-    id: C6
-    phase: 7
-    desktop: proven
-    mobile: proven
-    roles: proven
-    offline: not_applicable
-    provider: not_applicable
-    database: proven
-    filesystem: proven
-    performance: not_applicable
-    evidence: &phase_seven_terrain_workflow_evidence
-      desktop: &phase_seven_browser
-        - scripts/check_complete_journeys_e2e.cjs
-        - scripts/e2e/journeys/providersAndTerrain.cjs
-        - scripts/e2e/fixtures/complete_journeys_phase_seven_oracle.json
-        - tests/test_complete_journey_e2e_scripts.py
-      mobile: *phase_seven_browser
-      roles: *phase_seven_browser
-      database: *phase_seven_browser
-      filesystem: *phase_seven_browser
-    notes:
-      <<: *default_notes
-      offline: LiDAR upload and removal are immediate online administration operations and are absent from the supported offline queue.
-      provider: LiDAR upload, generated terrain tiles, and cleanup are local GardenOps operations with no external-provider request.
-      performance: LiDAR acceptance is bounded by explicit upload-byte, point-count, and grid-cell limits; its user contract is safe completion and progress rather than an unbounded interactive collection, while terrain display is covered by M5.
   - <<: *open_journey
     id: CROSS-01
     phase: 1
@@ -407,7 +381,7 @@ journeys:
     filesystem: not_applicable
     evidence:
       <<: *phase_two_core_evidence
-      provider: *phase_seven_browser
+      provider: *phase_seven_provider_settings_browser
       performance: *phase_nine_performance_evidence
     notes:
       <<: *default_notes
@@ -499,11 +473,11 @@ journeys:
     filesystem: not_applicable
     performance: not_applicable
     evidence: &phase_seven_chat_evidence
-      desktop: *phase_seven_browser
-      mobile: *phase_seven_browser
-      roles: *phase_seven_browser
-      provider: *phase_seven_browser
-      database: *phase_seven_browser
+      desktop: *phase_seven_provider_settings_browser
+      mobile: *phase_seven_provider_settings_browser
+      roles: *phase_seven_provider_settings_browser
+      provider: *phase_seven_provider_settings_browser
+      database: *phase_seven_provider_settings_browser
     notes:
       <<: *default_notes
       offline: Provider chat is an online text request and has no supported queued operation.
@@ -651,29 +625,6 @@ journeys:
       offline: Snapshot behavior is not a supported offline operation.
       provider: M4 has no external provider contract.
       performance: Snapshot restore returns to the map-first rendering path covered by the M1 large-garden budget; parsing and restoration are bounded by the supported import contract.
-  - <<: *open_journey
-    id: M5
-    phase: 7
-    desktop: proven
-    mobile: proven
-    roles: proven
-    provider: proven
-    database: proven
-    filesystem: proven
-    offline: not_applicable
-    performance: proven
-    evidence: &phase_seven_terrain_evidence
-      desktop: *phase_seven_browser
-      mobile: *phase_seven_browser
-      roles: *phase_seven_browser
-      provider: *phase_seven_browser
-      database: *phase_seven_browser
-      filesystem: *phase_seven_browser
-      performance: *phase_nine_performance_evidence
-    notes:
-      <<: *default_notes
-      offline: Shade and terrain operations are immediate online actions and have no supported offline queue.
-      performance: Shade and terrain rendering remains inside the map-first surface measured at large-garden scale by M1; terrain tile work is bounded by the configured zoom and local terrain limits.
   - <<: *open_journey
     id: OFF-01
     phase: 6

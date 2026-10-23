@@ -21,7 +21,7 @@ from gardenops.audit import (
     write_required_audit_event,
 )
 from gardenops.db import DB, DbConn, current_timestamp_ms, executemany
-from gardenops.feature_gates import TIER_ORDER, feature_allowed, features_for_tier
+from gardenops.feature_gates import TIER_ORDER, features_for_tier
 from gardenops.incident_controls import (
     get_emergency_read_only_status,
     list_active_sessions,
@@ -31,8 +31,6 @@ from gardenops.incident_controls import (
     set_emergency_read_only,
 )
 from gardenops.models import StrictBaseModel
-from gardenops.platform_secrets import ConfigurationError
-from gardenops.provider_settings import get_shademap_api_key, shademap_enabled
 from gardenops.rate_limit import (
     client_ip,
     enforce_key_rate_limit,
@@ -2223,25 +2221,6 @@ def auth_me(request: Request, response: Response, db: DB) -> dict[str, object]:
                 path=session_cookie_path(),
                 domain=session_cookie_domain(),
             )
-    try:
-        server_shademap_key = get_shademap_api_key(db) or ""
-        server_shademap_enabled = shademap_enabled()
-    except ConfigurationError:
-        server_shademap_key = ""
-        server_shademap_enabled = False
-    shademap_available = (
-        server_shademap_enabled
-        and feature_allowed(
-            context.subscription_tier,
-            "shade_map",
-        )
-        and bool(
-            server_shademap_key
-            or os.environ.get("SHADEMAP_PUBLIC_API_KEY", "").strip()
-            or os.environ.get("SHADEMAP_PUBLIC_KEY", "").strip()
-            or os.environ.get("SHADEMAP_CLIENT_KEY", "").strip()
-        )
-    )
     language = "en"
     if context.user_id is not None:
         row = db.execute(
@@ -2284,7 +2263,6 @@ def auth_me(request: Request, response: Response, db: DB) -> dict[str, object]:
         "auth_type": context.auth_type,
         "write_access": has_write_access(context),
         "language": language,
-        "shademap_available": shademap_available,
         "mfa_enabled": bool(mfa["enabled"]),
         "mfa_setup_required": bool(context.mfa_setup_required),
         "mfa_authenticated": int(context.mfa_authenticated_at_ms or 0) > 0,

@@ -13,7 +13,6 @@ import psycopg
 from fastapi import APIRouter, HTTPException, Query, Request
 from psycopg import sql
 from pydantic import Field
-from starlette.concurrency import run_in_threadpool
 
 from gardenops.audit import (
     enqueue_audit_event_telemetry,
@@ -24,44 +23,24 @@ from gardenops.branding import app_user_agent
 from gardenops.constants import GRID_COLS, GRID_ROWS
 from gardenops.db import DB, DbConn, current_timestamp_ms, ensure_indoor_plot
 from gardenops.events import notify_garden_modified
-from gardenops.feature_gates import feature_allowed
 from gardenops.models import LayoutExportBody, LayoutStateBody, StrictBaseModel
-from gardenops.provider_settings import shademap_enabled
-from gardenops.rate_limit import acquire_concurrency_slot, enforce_rate_limit, env_int
-from gardenops.request_body import read_body_limited
+from gardenops.rate_limit import enforce_rate_limit, env_int
 from gardenops.router_helpers import auth_context as _auth_context
 from gardenops.router_helpers import is_local_admin_fallback as _is_local_admin_fallback
 from gardenops.routers.auth import enforce_destructive_admin_controls
 from gardenops.security import AuthContext, user_lifecycle_enabled
 from gardenops.security_metrics import record_security_event
 from gardenops.services.garden_layout_lock import lock_garden_layout
-from gardenops.services.lidar_terrain import (
-    clear_local_terrain_cache,
-    lidar_upload_max_bytes,
-    local_terrain_storage_info,
-    prepare_uploaded_terrain,
-    uploaded_terrain_mutation_lock,
-    uploaded_terrain_storage_keys,
-)
 from gardenops.services.media_store import (
     drain_media_cleanup_jobs_best_effort,
     enqueue_media_cleanup_jobs,
+    resolve_storage_key,
 )
 from gardenops.services.plot_references import delete_plots_for_replacement
 
 router = APIRouter()
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _imported_layout_has_shademap_fields(layout: LayoutExportBody | None) -> bool:
-    if layout is None:
-        return False
-    return (
-        layout.shademap is not None
-        or layout.shademap_calibration is not None
-        or layout.shademap_obstacles is not None
-    )
 
 
 class GardenSettingsBody(StrictBaseModel):
@@ -270,14 +249,6 @@ def _require_garden_exists(db: DbConn, garden_id: int) -> None:
     ).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Garden not found")
-
-
-def _invalidate_garden_terrain_state(db: DbConn, garden_id: int) -> None:
-    db.execute(
-        "DELETE FROM shademap_cache WHERE garden_id = %s AND cache_kind = 'terrain-tile'",
-        (garden_id,),
-    )
-    db.execute("DELETE FROM plot_elevations WHERE garden_id = %s", (garden_id,))
 
 
 def _require_membership_admin(
@@ -547,8 +518,11 @@ def _delete_garden_related_state(
             (garden_id,),
         ).fetchall()
     }
+    # Preserve deletion of private uploads left by the retired terrain feature.
     media_storage_pairs.update(
-        (storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)
+        (key, "")
+        for suffix in (".las", ".laz")
+        if resolve_storage_key(key := f"lidar/garden-{garden_id}/terrain{suffix}").is_file()
     )
     plant_ids = [
         str(row["plt_id"])
@@ -1011,7 +985,6 @@ def delete_garden(
         raise
     enqueue_audit_event_telemetry(audit_values, db=db)
     drain_media_cleanup_jobs_best_effort(db, storage_pairs=media_storage_pairs)
-    clear_local_terrain_cache()
     notify_garden_modified()
     record_security_event("destructive_admin_actions")
     record_security_event("destructive_admin_actions_delete_garden")
@@ -1488,131 +1461,6 @@ def geocode_garden_location(
     return {"results": _geocode_query(query)}
 
 
-@router.get("/gardens/{garden_id}/lidar")
-def get_garden_lidar_status(
-    garden_id: int,
-    request: Request,
-    db: DB,
-) -> dict[str, object]:
-    context = _auth_context(request)
-    _require_garden_exists(db, garden_id)
-    if not _is_platform_admin(context) and not _is_local_admin_fallback(context):
-        if context.user_id is None:
-            raise HTTPException(status_code=404, detail="Garden not found")
-        membership = db.execute(
-            "SELECT 1 FROM garden_memberships WHERE garden_id = %s AND user_id = %s LIMIT 1",
-            (garden_id, context.user_id),
-        ).fetchone()
-        if not membership:
-            raise HTTPException(status_code=404, detail="Garden not found")
-    return {"garden_id": garden_id, **local_terrain_storage_info(garden_id)}
-
-
-@router.post("/gardens/{garden_id}/lidar", status_code=201)
-async def upload_garden_lidar(
-    garden_id: int,
-    request: Request,
-    db: DB,
-) -> dict[str, object]:
-    context = _auth_context(request)
-    _require_membership_editor(db, context=context, garden_id=garden_id)
-    if not shademap_enabled():
-        raise HTTPException(status_code=404, detail="ShadeMap is disabled")
-    enforce_rate_limit(
-        request,
-        bucket="garden-lidar-upload",
-        limit=env_int("GARDEN_LIDAR_UPLOAD_RATE_LIMIT", 4),
-        window_seconds=60,
-    )
-    max_bytes = lidar_upload_max_bytes()
-    content_length_raw = request.headers.get("content-length", "").strip()
-    if content_length_raw:
-        try:
-            if int(content_length_raw) > max_bytes:
-                raise HTTPException(status_code=413, detail="LiDAR upload exceeds size limit")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid Content-Length header") from None
-    payload = await read_body_limited(request, max_bytes)
-    filename = request.headers.get("x-upload-filename", "").strip()
-
-    def store_upload() -> dict[str, object]:
-        # Preparation and its file/transaction cleanup stay on the same worker.
-        with acquire_concurrency_slot(bucket="garden-lidar-processing", limit=1):
-            return _store_garden_lidar(garden_id, request, db, context, payload, filename)
-
-    return await run_in_threadpool(store_upload)
-
-
-def _store_garden_lidar(
-    garden_id: int,
-    request: Request,
-    db: DbConn,
-    context: AuthContext,
-    payload: bytes,
-    filename: str,
-) -> dict[str, object]:
-    try:
-        prepared = prepare_uploaded_terrain(garden_id, payload, filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    with uploaded_terrain_mutation_lock():
-        try:
-            status = prepared.activate()
-            _invalidate_garden_terrain_state(db, garden_id)
-            db.commit()
-        except Exception:
-            db.rollback()
-            prepared.rollback()
-            raise
-        cleanup_failed = bool(prepared.finalize())
-    notify_garden_modified()
-    _audit_membership_change(
-        request,
-        context,
-        _lifecycle_detail("garden.lidar.upload", garden_id=garden_id, filename=filename[:120]),
-        garden_id=garden_id,
-        db=db,
-    )
-    return {
-        "garden_id": garden_id,
-        **status,
-        "file_cleanup": "pending" if cleanup_failed else "complete",
-    }
-
-
-@router.delete("/gardens/{garden_id}/lidar")
-def delete_garden_lidar(
-    garden_id: int,
-    request: Request,
-    db: DB,
-) -> dict[str, object]:
-    context = _auth_context(request)
-    _require_membership_editor(db, context=context, garden_id=garden_id)
-    with uploaded_terrain_mutation_lock():
-        storage_pairs = [
-            (storage_key, "") for storage_key in uploaded_terrain_storage_keys(garden_id)
-        ]
-        enqueue_media_cleanup_jobs(db, storage_pairs)
-        _invalidate_garden_terrain_state(db, garden_id)
-        db.commit()
-        cleanup = drain_media_cleanup_jobs_best_effort(db, storage_pairs=storage_pairs)
-        clear_local_terrain_cache()
-        status = local_terrain_storage_info(garden_id)
-    notify_garden_modified()
-    _audit_membership_change(
-        request,
-        context,
-        _lifecycle_detail("garden.lidar.delete", garden_id=garden_id),
-        garden_id=garden_id,
-        db=db,
-    )
-    return {
-        "garden_id": garden_id,
-        **status,
-        "file_cleanup": "pending" if cleanup.failed else "complete",
-    }
-
-
 @router.patch("/gardens/{garden_id}/settings")
 def update_garden_settings(
     garden_id: int,
@@ -1721,10 +1569,8 @@ def update_garden_settings(
             },
             garden_id=garden_id,
         )
-        _invalidate_garden_terrain_state(db, garden_id)
 
     if {"latitude", "longitude", "address"} & provided:
-        _invalidate_garden_terrain_state(db, garden_id)
         db.execute("DELETE FROM weather_cache WHERE garden_id = %s", (garden_id,))
 
     params.append(garden_id)
@@ -1861,12 +1707,6 @@ def complete_garden_onboarding(
 
     if body.mode == "import" and body.imported_layout is None:
         raise HTTPException(status_code=400, detail="Imported layout is required for import mode")
-    if body.mode == "import" and _imported_layout_has_shademap_fields(body.imported_layout):
-        if not feature_allowed(context.subscription_tier, "shade_map"):
-            raise HTTPException(
-                status_code=403,
-                detail="ShadeMap import fields require the shade_map feature",
-            )
     normalized_name = _normalize_garden_name(body.name)
 
     grid_rows, grid_cols = (
@@ -1955,24 +1795,6 @@ def complete_garden_onboarding(
                 house=(
                     imported_layout.house.model_dump(exclude_none=True)
                     if imported_layout.house is not None
-                    else None
-                ),
-                shademap=(
-                    imported_layout.shademap.model_dump(exclude_none=True)
-                    if imported_layout.shademap is not None
-                    else None
-                ),
-                shademap_calibration=(
-                    imported_layout.shademap_calibration.model_dump(exclude_none=True)
-                    if imported_layout.shademap_calibration is not None
-                    else None
-                ),
-                shademap_obstacles=(
-                    [
-                        item.model_dump(exclude_none=True)
-                        for item in imported_layout.shademap_obstacles
-                    ]
-                    if imported_layout.shademap_obstacles is not None
                     else None
                 ),
                 map_objects=(

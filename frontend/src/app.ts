@@ -51,10 +51,10 @@ import {
   type PlantLocationDestination,
 } from "./components/plantLocationPicker";
 import { confirmDialog, createModal, promptDialog, promptPasswordDialog } from "./components/dialogCore";
-import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy, showElevationEditorLazy } from "./components/gardenDialogsLoader";
+import { showCreatePlantDialogLazy, showCreatePlotDialogLazy, showCreateZoneDialogLazy, showDeleteMenuLazy, showEditPlantDialogLazy, showEditPlotDialogLazy } from "./components/gardenDialogsLoader";
 import type { AiPlantData } from "./components/overlays";
 import { dismissPopover } from "./components/popover";
-import type { ShadePanelController } from "./components/shadePanel";
+
 import {
   invalidatePlotPanelCache,
   resetPlotPanelsForContextChange,
@@ -108,7 +108,7 @@ import {
   UNDO_STACK_LIMIT,
 } from "./core/constants";
 import { appName, appSlug } from "./core/branding";
-import { shadeMapBrowserEnabled } from "./core/runtimeFeatures";
+
 import { queryButton, queryInput, querySelect } from "./core/dom";
 import { getLocale, localizeRoot, setLocale, subscribeLocaleChange, t } from "./core/i18n";
 import type {
@@ -171,19 +171,11 @@ import {
   getPlants,
   getPlotDeleteImpactApi,
   getPlotPlants,
-  getPlotElevationsApi,
   getPlots,
-  updatePlotElevationsApi,
-  getShadeMapCalibrationApi,
-  getShadeMapConfigApi,
-  listShadeMapObstaclesApi,
-  getShadeMapStateApi,
   hasStoredAuthToken,
   type HouseLayoutState,
   type LayoutExport,
   type LayoutExportPlot,
-  type PersistedShadeMapState,
-  type PlotElevations,
   importMapApi,
   importPlantsCsvApi,
   isAuthApiError,
@@ -198,7 +190,6 @@ import {
   updateAuthMeSettingsApi,
   updateMapObjectApi,
   updateContainerApi,
-  updateShadeMapStateApi,
   updatePlantApi,
   updateLayoutStateApi,
   getPlantApi,
@@ -273,7 +264,6 @@ const state: AppState = {
   plantsCache: [],
   selectedPlotId: null,
   selectedPlotIds: new Set(),
-  sunlitPlotIds: new Set(),
   editMode: false,
   housePosition: { row: 9, col: 6 },
   houseSize: { width: 12, height: 8 },
@@ -531,8 +521,6 @@ const mapInteraction = {
   } | null,
   hiddenZones: new Set<string>(),
   activeCatFilter: null as string | null,
-  showElevation: false,
-  elevationCache: null as PlotElevations | null,
 };
 
 interface MapObjectGeometryRequestState {
@@ -542,7 +530,7 @@ interface MapObjectGeometryRequestState {
 }
 
 const mapObjectGeometryRequests = new Map<string, MapObjectGeometryRequestState>();
-let elevationCacheGardenId: number | null = null;
+
 function loadSort(): { field: SortField; dir: SortDir } {
   return loadFromStorage(
     "gardenops-sort",
@@ -556,16 +544,11 @@ function loadSort(): { field: SortField; dir: SortDir } {
 
 const _initSort = loadSort();
 let cameraCtrl: CameraController | null = null;
-let shadePanel: ShadePanelController | null = null;
-let shadePanelControllerPromise: Promise<ShadePanelController> | null = null;
+
 let _cameraState: CameraState = { x: 0, y: 0, zoom: 1 };
 let appStatusAction: (() => void) | null = null;
 let layoutPersistTimer: number | null = null;
-let shadeMapPersistTimer: number | null = null;
-let shadeMapPanelLoadedGardenId: number | null = null;
-let shadeMapPanelLoadingGardenId: number | null = null;
-let shadeMapPanelLoadPromise: Promise<void> | null = null;
-let shadeMapPanelLoadEpoch = 0;
+
 let appVersionPollTimer: number | null = null;
 let appVersionVisibilityHandlerBound = false;
 let localeUiSubscriptionBound = false;
@@ -780,7 +763,7 @@ function refreshLocalizedSignedInViews(): void {
   updatePlantCsvActionLabels();
   updateThemeIcon();
   syncMobileCapabilities();
-  shadePanel?.refreshLocale();
+
   updateBatchBar();
   if (document.getElementById("plants-view")) {
     renderPlantsTable();
@@ -811,13 +794,11 @@ function refreshLocalizedSignedInViews(): void {
 
 type MobileMapSheetId =
   | "map-layers-panel"
-  | "shade-panel"
   | "mobile-map-layouts-sheet"
   | "mobile-map-tools-sheet";
 
 const MOBILE_MAP_SHEET_IDS: MobileMapSheetId[] = [
   "map-layers-panel",
-  "shade-panel",
   "mobile-map-layouts-sheet",
   "mobile-map-tools-sheet",
 ];
@@ -825,16 +806,11 @@ const MOBILE_MAP_SHEET_IDS: MobileMapSheetId[] = [
 const MOBILE_MAP_SHEET_TRIGGERS: Array<{ triggerId: string; sheetId: MobileMapSheetId }> = [
   { triggerId: "mobile-map-layers-btn", sheetId: "map-layers-panel" },
   { triggerId: "mobile-map-highlight-btn", sheetId: "map-layers-panel" },
-  { triggerId: "mobile-map-shade-btn", sheetId: "shade-panel" },
   { triggerId: "mobile-map-layouts-btn", sheetId: "mobile-map-layouts-sheet" },
   { triggerId: "mobile-map-tools-btn", sheetId: "mobile-map-tools-sheet" },
 ];
 let mobileMapSheetFocusReturnTarget: HTMLElement | null = null;
 let mobileUtilityFocusReturnTarget: HTMLElement | null = null;
-
-function getTopLevelShadeDisclosures(): HTMLDetailsElement[] {
-  return Array.from(document.querySelectorAll<HTMLDetailsElement>("#shade-panel > .shade-disclosure"));
-}
 
 function getMobileKeyboardOffset(): number {
   if (!window.visualViewport) return 0;
@@ -849,12 +825,6 @@ function syncMobileViewportOffset(): void {
   );
 }
 
-function closeMobileShadeDisclosures(): void {
-  getTopLevelShadeDisclosures().forEach((details) => {
-    if (details.open) details.open = false;
-  });
-}
-
 function maybeCenterFocusedMobileField(target: EventTarget | null): void {
   if (!isMobile()) return;
   if (
@@ -865,7 +835,7 @@ function maybeCenterFocusedMobileField(target: EventTarget | null): void {
     return;
   }
   const overlay = target.closest(
-    ".mobile-utility-sheet--open, .mobile-map-sheet--open, #shade-panel > .shade-disclosure[open]",
+    ".mobile-utility-sheet--open, .mobile-map-sheet--open",
   );
   if (!(overlay instanceof HTMLElement)) return;
   window.setTimeout(() => {
@@ -884,7 +854,7 @@ function setMobileUtilityOpen(open: boolean, restoreFocus = true): void {
       ? activeElement
       : trigger;
     setMobileMapSheetOpen(null);
-    closeMobileShadeDisclosures();
+
   }
 
   sheet.classList.toggle("mobile-utility-sheet--open", open);
@@ -1035,10 +1005,6 @@ function trapMobileMapSheetFocus(event: KeyboardEvent): boolean {
   return trapFocusWithin(event, sheet);
 }
 
-function shouldLoadShadeMapPanelNow(): boolean {
-  return !isMobile() || isMobileMapSheetOpen("shade-panel");
-}
-
 function syncMobileMapSheetAccessibility(): void {
   MOBILE_MAP_SHEET_IDS.forEach((id) => {
     const sheet = document.getElementById(id);
@@ -1072,13 +1038,8 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
   if (!backdrop) return;
 
   const previouslyOpen = getOpenMobileMapSheetId();
-  let nextOpen = sheetId && isMobile() && activeTab === "map" ? sheetId : null;
-  if (nextOpen === "shade-panel") {
-    const shadePanelEl = document.getElementById("shade-panel");
-    if (!(shadePanelEl instanceof HTMLElement) || shadePanelEl.hidden) {
-      nextOpen = null;
-    }
-  }
+  const nextOpen = sheetId && isMobile() && activeTab === "map" ? sheetId : null;
+
   if (nextOpen) {
     const activeElement = document.activeElement;
     if (
@@ -1090,7 +1051,7 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
       mobileMapSheetFocusReturnTarget = mobileMapSheetTriggerFor(nextOpen);
     }
     setMobileUtilityOpen(false, false);
-    closeMobileShadeDisclosures();
+
     const dropdown = document.getElementById("snapshots-dropdown");
     if (dropdown instanceof HTMLElement) dropdown.hidden = true;
   }
@@ -1110,9 +1071,7 @@ function setMobileMapSheetOpen(sheetId: MobileMapSheetId | null): void {
     trigger?.setAttribute("aria-expanded", String(nextOpen === triggerSheetId));
   });
   document.body.classList.toggle("mobile-map-sheet-open", nextOpen !== null);
-  if (nextOpen === "shade-panel") {
-    void ensureShadeMapPanelLoaded();
-  }
+
   if (nextOpen) {
     focusMobileMapSheet(nextOpen);
   } else if (previouslyOpen) {
@@ -1414,9 +1373,6 @@ const plotCbs: PlotCallbacks = {
     if (activeTab === "garden" || activeTab === "activity") void ensurePlantsLoaded();
     if (activeTab === "insights" && subMode === "care") { void loadCareTab(); void loadWeather(); }
   },
-  onPlotFocusChanged: (plotId) => {
-    shadePanel?.setSelectedPlot(plotId);
-  },
   onViewJournal: (plotId) => {
     const gardenId = getActiveGardenContext();
     const generation = experienceGeneration;
@@ -1450,7 +1406,6 @@ const WRITE_CONTROL_IDS = [
   "import-csv-btn",
   "add-plant-btn",
   "generate-care-btn",
-  "elevation-edit-btn",
   "adm-map-open-editor-btn",
   "adm-map-save-layout-btn",
   "adm-map-import-btn",
@@ -1473,10 +1428,6 @@ const WRITE_CONTROL_IDS = [
   "mobile-grid-cols-input",
   "mobile-grid-rows-input",
   "mobile-grid-dims-apply-btn",
-  "shade-calibration-save-btn",
-  "shade-calibration-reset-btn",
-  "shade-obstacle-save-btn",
-  "shade-obstacle-delete-btn",
   "inventory-add-btn",
   "journal-add-btn",
   "tasks-add-btn",
@@ -2142,39 +2093,6 @@ function openCareForPlantsLazy(pltIds: string[]): void {
   });
 }
 
-type ShadePanelModule = typeof import("./components/shadePanel");
-
-function ensureShadePanelController(): Promise<ShadePanelController> {
-  if (!shadeMapBrowserEnabled) return Promise.reject(new Error("ShadeMap is disabled"));
-  if (shadePanel) {
-    return Promise.resolve(shadePanel);
-  }
-  shadePanelControllerPromise ??= import("./components/shadePanel")
-    .then((mod: ShadePanelModule) => {
-      const panel = new mod.ShadePanelController({
-        onStateChanged: scheduleShadeMapPersist,
-        onSunlightSnapshot: (plotIds) => {
-          const next = new Set(plotIds);
-          if (samePlotIdSet(state.sunlitPlotIds, next)) return;
-          const prev = state.sunlitPlotIds;
-          state.sunlitPlotIds = next;
-          if (!applySunlightDiff(prev, next)) {
-            renderPlots();
-          }
-        },
-      });
-      panel.init();
-      shadePanel = panel;
-      syncShadePanelContext();
-      return panel;
-    })
-    .catch((err) => {
-      shadePanelControllerPromise = null;
-      throw err;
-    });
-  return shadePanelControllerPromise;
-}
-
 // ── Plant table config ─────────────────────────────────────
 const DEFAULT_COLUMN_KEYS = [
   "name",
@@ -2351,7 +2269,6 @@ function openMapForPlots(plotIds: string[]): void {
     showToast(t("experience.no_current_location"), "error");
   }
 }
-
 
 function openBatchJournalForPlants(pltIds: string[]): void {
   setFocusedPlantIds(pltIds);
@@ -2648,12 +2565,12 @@ function setupLayout(): void {
   const mobileMapLayersBtn = queryButton("mobile-map-layers-btn");
   const mapEditBtn = queryButton("edit-mode-btn");
   const mobileMapHighlightBtn = queryButton("mobile-map-highlight-btn");
-  const mobileMapShadeBtn = queryButton("mobile-map-shade-btn");
+
   const mobileMapLayoutsBtn = queryButton("mobile-map-layouts-btn");
   const mobileMapSaveBtn = queryButton("mobile-map-save-btn");
   const mobileMapToolsBtn = queryButton("mobile-map-tools-btn");
   const mobileMapLayersCloseBtn = queryButton("mobile-map-layers-close-btn");
-  const mobileMapShadeCloseBtn = queryButton("mobile-map-shade-close-btn");
+
   const mobileMapLayoutsCloseBtn = queryButton("mobile-map-layouts-close-btn");
   const mobileMapToolsCloseBtn = queryButton("mobile-map-tools-close-btn");
   const mobileMapSheetBackdrop = document.getElementById("mobile-map-sheet-backdrop");
@@ -2689,14 +2606,7 @@ function setupLayout(): void {
   mobileMapHighlightBtn?.addEventListener("click", () => {
     openMobileMapLayerSheet("map-layer-highlight-section");
   });
-  mobileMapShadeBtn?.addEventListener("click", async () => {
-    const shadePanelEl = document.getElementById("shade-panel");
-    if (!(shadePanelEl instanceof HTMLElement) || shadePanelEl.hidden || mobileMapShadeBtn.disabled) return;
-    if (!isMobileMapSheetOpen("shade-panel")) {
-      await ensureShadeMapPanelLoaded();
-    }
-    setMobileMapSheetOpen(isMobileMapSheetOpen("shade-panel") ? null : "shade-panel");
-  });
+
   mobileMapLayoutsBtn?.addEventListener("click", () => {
     if (isMobileMapSheetOpen("mobile-map-layouts-sheet")) {
       setMobileMapSheetOpen(null);
@@ -2709,7 +2619,7 @@ function setupLayout(): void {
     setMobileMapSheetOpen(isMobileMapSheetOpen("mobile-map-tools-sheet") ? null : "mobile-map-tools-sheet");
   });
   mobileMapLayersCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
-  mobileMapShadeCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
+
   mobileMapLayoutsCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
   mobileMapToolsCloseBtn?.addEventListener("click", () => setMobileMapSheetOpen(null));
   mobileMapSheetBackdrop?.addEventListener("click", () => setMobileMapSheetOpen(null));
@@ -2737,18 +2647,6 @@ function setupLayout(): void {
   mobileCreateZoneBtn?.addEventListener("click", () => {
     setMobileMapSheetOpen(null);
     openCreateZoneDialog();
-  });
-  getTopLevelShadeDisclosures().forEach((details) => {
-    details.addEventListener("toggle", () => {
-      if (details.open && isMobile()) {
-        setMobileUtilityOpen(false);
-        getTopLevelShadeDisclosures().forEach((other) => {
-          if (other !== details && other.open) {
-            other.open = false;
-          }
-        });
-      }
-    });
   });
 
   document.querySelectorAll<HTMLInputElement>(".global-search-input").forEach((input) => {
@@ -2930,24 +2828,6 @@ function updateMapDirectionControlVisibility(): void {
     editBtn.setAttribute("aria-expanded", visible ? "true" : "false");
   }
   syncGridDimensionInputs();
-}
-
-function syncShadePanelContext(): void {
-  shadePanel?.setGardenContext({
-    plots: state.plots,
-    selectedPlotId: state.selectedPlotId,
-    housePosition: state.housePosition,
-    houseSize: state.houseSize,
-    northDegrees: state.northDegrees,
-  });
-}
-
-function samePlotIdSet(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const value of a) {
-    if (!b.has(value)) return false;
-  }
-  return true;
 }
 
 function syncSubModeButtons(): void {
@@ -3260,14 +3140,14 @@ function applyNavigationState(opts: { triggerLoads?: boolean } = {}): void {
 
   updateMapDirectionControlVisibility();
   if (activeTab === "map") {
-    if (shouldLoadShadeMapPanelNow()) void ensureShadeMapPanelLoaded();
+
     requestPlotAlertsAfterPaint();
   }
   updateMobileHeader();
   if (activeTab !== "map" || !isMobile()) {
     attentionTodayPanel?.closeMobileSheet();
     setMobileMapSheetOpen(null);
-    closeMobileShadeDisclosures();
+
   }
   if (isMobile()) {
     setMobileUtilityOpen(false);
@@ -4054,99 +3934,6 @@ async function deleteSelectedMapObject(publicId: string): Promise<void> {
   }
 }
 
-function scheduleShadeMapPersist(nextState: PersistedShadeMapState): void {
-  if (shadeMapPersistTimer != null) {
-    window.clearTimeout(shadeMapPersistTimer);
-  }
-  shadeMapPersistTimer = window.setTimeout(() => {
-    shadeMapPersistTimer = null;
-    void updateShadeMapStateApi(nextState).catch(showFetchError);
-  }, 120);
-}
-
-function resetShadeMapPanelLoadState(): void {
-  shadeMapPanelLoadedGardenId = null;
-  shadeMapPanelLoadingGardenId = null;
-  shadeMapPanelLoadPromise = null;
-  shadeMapPanelLoadEpoch += 1;
-}
-
-async function ensureShadeMapPanelLoaded(): Promise<void> {
-  const gardenId = getActiveGardenContext();
-  if (!shadeMapBrowserEnabled || !(authProfile?.shademap_available ?? false) || gardenId === null) {
-    return;
-  }
-  const panel = await ensureShadePanelController();
-  if (shadeMapPanelLoadedGardenId === gardenId) {
-    if (activeTab === "map") {
-      panel.activate();
-    }
-    return;
-  }
-  if (shadeMapPanelLoadingGardenId === gardenId && shadeMapPanelLoadPromise) {
-    await shadeMapPanelLoadPromise;
-    if (shadeMapPanelLoadedGardenId === gardenId && activeTab === "map") {
-      panel.activate();
-    }
-    return;
-  }
-
-  const loadEpoch = shadeMapPanelLoadEpoch;
-  shadeMapPanelLoadingGardenId = gardenId;
-  let loadPromise: Promise<void>;
-  loadPromise = (async () => {
-    try {
-      const [config, persistedState, calibration, obstacles] = await Promise.all([
-        getShadeMapConfigApi(),
-        getShadeMapStateApi(),
-        getShadeMapCalibrationApi(),
-        listShadeMapObstaclesApi(),
-      ]);
-      if (
-        loadEpoch !== shadeMapPanelLoadEpoch
-        || getActiveGardenContext() !== gardenId
-        || !(authProfile?.shademap_available ?? false)
-      ) {
-        return;
-      }
-      await panel.load(config, persistedState, calibration, obstacles);
-      if (
-        loadEpoch !== shadeMapPanelLoadEpoch
-        || getActiveGardenContext() !== gardenId
-        || !(authProfile?.shademap_available ?? false)
-      ) {
-        return;
-      }
-      shadeMapPanelLoadedGardenId = gardenId;
-      if (activeTab === "map") {
-        panel.activate();
-      }
-    } catch (err) {
-      if (
-        loadEpoch !== shadeMapPanelLoadEpoch
-        || getActiveGardenContext() !== gardenId
-        || !(authProfile?.shademap_available ?? false)
-      ) {
-        return;
-      }
-      panel.showError(getApiErrorMessage(err));
-      if (isAuthApiError(err)) {
-        showFetchError(err);
-      }
-    } finally {
-      if (
-        loadEpoch === shadeMapPanelLoadEpoch
-        && shadeMapPanelLoadingGardenId === gardenId
-      ) {
-        shadeMapPanelLoadingGardenId = null;
-        shadeMapPanelLoadPromise = null;
-      }
-    }
-  })();
-  shadeMapPanelLoadPromise = loadPromise;
-  await loadPromise;
-}
-
 async function persistHouseGeometry(): Promise<void> {
   await updateLayoutStateApi({
     row: state.housePosition.row,
@@ -4177,7 +3964,7 @@ function applyNorthDirection(raw: string | number, persistImmediately = false): 
   }
   syncDirectionControls();
   renderDirectionLabels();
-  syncShadePanelContext();
+
   if (persistImmediately) {
     void persistHouseGeometry().catch(showFetchError);
   } else {
@@ -5321,156 +5108,6 @@ function initCategoryFilters(): void {
     });
   });
 
-  const elevBtn = document.getElementById("elevation-toggle-btn");
-  elevBtn?.addEventListener("click", () => void toggleElevation());
-
-  const elevEditBtn = document.getElementById("elevation-edit-btn");
-  elevEditBtn?.addEventListener(
-    "click",
-    () => void openElevationEditor(),
-  );
-}
-
-function syncElevEditButton(): void {
-  const editBtn = document.getElementById("elevation-edit-btn");
-  if (editBtn) editBtn.hidden = !mapInteraction.showElevation;
-}
-
-function hasUsableElevationData(elevationData: PlotElevations | null): boolean {
-  return Boolean(
-    elevationData?.available
-    && Object.keys(elevationData.elevations).length > 0,
-  );
-}
-
-function syncElevationSectionVisibility(visible: boolean): void {
-  const section = document.getElementById("map-layer-elevation-section");
-  if (section) section.hidden = !visible;
-  const toggleBtn = queryButton("elevation-toggle-btn");
-  if (toggleBtn) {
-    toggleBtn.disabled = !visible;
-    toggleBtn.classList.toggle("active", visible && mapInteraction.showElevation);
-  }
-  syncElevEditButton();
-}
-
-function clearElevationAvailability(renderIfActive = true): void {
-  const wasShowingElevation = mapInteraction.showElevation;
-  elevationCacheGardenId = null;
-  mapInteraction.elevationCache = null;
-  mapInteraction.showElevation = false;
-  syncElevationSectionVisibility(false);
-  if (wasShowingElevation && renderIfActive) {
-    renderPlots();
-  }
-}
-
-function applyElevationAvailability(gardenId: number, elevationData: PlotElevations): void {
-  if (!hasUsableElevationData(elevationData)) {
-    clearElevationAvailability();
-    return;
-  }
-  elevationCacheGardenId = gardenId;
-  mapInteraction.elevationCache = elevationData;
-  syncElevationSectionVisibility(true);
-}
-
-async function refreshElevationAvailability(): Promise<void> {
-  const requestGardenId = getActiveGardenContext();
-  if (requestGardenId === null) {
-    clearElevationAvailability();
-    return;
-  }
-  if (elevationCacheGardenId !== requestGardenId) {
-    clearElevationAvailability();
-  }
-  try {
-    const elevationData = await getPlotElevationsApi();
-    if (!isCurrentGardenRequest(requestGardenId)) return;
-    applyElevationAvailability(requestGardenId, elevationData);
-  } catch {
-    if (isCurrentGardenRequest(requestGardenId) && elevationCacheGardenId !== requestGardenId) {
-      clearElevationAvailability();
-    }
-  }
-}
-
-async function loadUsableElevationForAction(): Promise<PlotElevations | null> {
-  const activeGardenId = getActiveGardenContext();
-  if (mapInteraction.elevationCache && elevationCacheGardenId === activeGardenId) {
-    return mapInteraction.elevationCache;
-  }
-  try {
-    const elevationData = await getPlotElevationsApi();
-    if (!hasUsableElevationData(elevationData)) {
-      showToast(elevationData.available ? t("map.no_elevation_data") : t("map.lidar_unavailable"), "error");
-      clearElevationAvailability();
-      return null;
-    }
-    if (activeGardenId !== null) {
-      applyElevationAvailability(activeGardenId, elevationData);
-    } else {
-      mapInteraction.elevationCache = elevationData;
-    }
-    return elevationData;
-  } catch {
-    showToast(t("map.elevation_load_failed"), "error");
-    return null;
-  }
-}
-
-async function toggleElevation(): Promise<void> {
-  if (mapInteraction.showElevation) {
-    mapInteraction.showElevation = false;
-    syncElevationSectionVisibility(true);
-    renderPlots();
-    return;
-  }
-  const elevationData = await loadUsableElevationForAction();
-  if (!elevationData) return;
-  mapInteraction.showElevation = true;
-  syncElevationSectionVisibility(true);
-  renderPlots();
-}
-
-async function openElevationEditor(): Promise<void> {
-  const elevationData = await loadUsableElevationForAction();
-  if (!elevationData) return;
-
-  const zones: Record<string, string> = {};
-  for (const p of state.plots) {
-    zones[p.plot_id] = p.zone_code;
-  }
-
-  const editorPlots = state.plots
-    .filter((p) => p.grid_row != null && p.grid_col != null)
-    .map((p) => ({
-      plot_id: p.plot_id,
-      zone_code: p.zone_code,
-      grid_row: p.grid_row as number,
-      grid_col: p.grid_col as number,
-      color: p.color,
-    }));
-
-  showElevationEditorLazy({
-    elevations: elevationData.elevations,
-    overrides: elevationData.overrides,
-    zones,
-    plots: editorPlots,
-    gridRows: state.gridRows,
-    gridCols: state.gridCols,
-    onSave: async (ovr) => {
-      const activeGardenId = getActiveGardenContext();
-      const updatedElevationData = await updatePlotElevationsApi(ovr);
-      if (activeGardenId !== null) {
-        applyElevationAvailability(activeGardenId, updatedElevationData);
-      } else {
-        mapInteraction.elevationCache = updatedElevationData;
-      }
-      if (mapInteraction.showElevation) renderPlots();
-      showToast(t("map.elevation_saved"));
-    },
-  });
 }
 
 function applyCategoryHighlight(): void {
@@ -5492,26 +5129,6 @@ function applyCategoryHighlight(): void {
       el.classList.add("cat-dim");
     }
   });
-}
-
-function applySunlightDiff(previous: Set<string>, next: Set<string>): boolean {
-  const grid = document.getElementById("map-grid");
-  if (!grid) return false;
-  for (const plotId of previous) {
-    if (next.has(plotId)) continue;
-    const plot = grid.querySelector<HTMLElement>(`.plot[data-plot-id="${plotId}"]`);
-    if (!plot) return false;
-    plot.classList.remove("sunlit-direct");
-    delete plot.dataset["sunlight"];
-  }
-  for (const plotId of next) {
-    if (previous.has(plotId)) continue;
-    const plot = grid.querySelector<HTMLElement>(`.plot[data-plot-id="${plotId}"]`);
-    if (!plot) return false;
-    plot.classList.add("sunlit-direct");
-    plot.dataset["sunlight"] = "sun";
-  }
-  return true;
 }
 
 // ── Map rendering ──────────────────────────────────────────
@@ -5765,10 +5382,6 @@ function renderPlots(): void {
 
   clearMapObjectConflictState();
 
-  const elevRange = mapInteraction.elevationCache?.min_m != null && mapInteraction.elevationCache?.max_m != null
-    ? { min: mapInteraction.elevationCache.min_m, max: mapInteraction.elevationCache.max_m }
-    : null;
-
   renderMapGrid({
     grid,
     plots: state.plots.filter(p => p.grid_row !== null && p.grid_col !== null),
@@ -5776,10 +5389,6 @@ function renderPlots(): void {
     gridCols: state.gridCols,
     selectedPlotIds: state.selectedPlotIds,
     highlightedPlotIds: state.highlightedPlotIds,
-    sunlitPlotIds: state.sunlitPlotIds,
-    elevationData: mapInteraction.elevationCache?.elevations ?? null,
-    elevationRange: elevRange,
-    showElevation: mapInteraction.showElevation,
     editMode: state.editMode,
     housePosition: state.housePosition,
     houseSize: state.houseSize,
@@ -5950,7 +5559,7 @@ function renderPlots(): void {
 
   refreshZoneToggles();
   renderMapObjectsPanelView();
-  syncShadePanelContext();
+
   applyZoneVisibility(grid, mapInteraction.hiddenZones);
   applyCategoryHighlight();
   cameraCtrl?.updateMinimap(state.plots, mapInteraction.hiddenZones);
@@ -7165,9 +6774,9 @@ async function importMap(): Promise<void> {
     );
     if (!actionReason) return;
     await importMapApi(layout, { actionReason });
-    clearElevationAvailability();
+
     await refreshMapState();
-    await refreshElevationAvailability();
+
   } catch (err) {
     showToast(t("map.import_failed", { error: getApiErrorMessage(err) }), "error");
   } finally {
@@ -7232,7 +6841,7 @@ function closePanel(): void {
     el.classList.remove("selected");
   });
   state.selectedPlotId = null;
-  shadePanel?.setSelectedPlot(null);
+
 }
 
 function startClock(): void {
@@ -7564,7 +7173,7 @@ async function refreshGardenContext(options?: {
   const selects = getGardenSelects();
   const roleChips = getGardenRoleChips();
   if (selects.length === 0 || roleChips.length === 0) return;
-  resetShadeMapPanelLoadState();
+
   gardenContextAvailable = false;
 
   let me: AuthUserProfile | null = options?.profile ?? null;
@@ -7593,7 +7202,7 @@ async function refreshGardenContext(options?: {
       applyWriteAccessUi();
       updateAuthButton();
       updatePlantCsvActionLabels();
-      updateShadeMapAvailabilityUi();
+
       syncAdminTabLabels();
       updateMobileHeader();
       return;
@@ -7696,29 +7305,12 @@ async function refreshGardenContext(options?: {
   gardenContextAvailable = !gardensFetchFailed;
   applyWriteAccessUi();
   updateAuthButton();
-  updateShadeMapAvailabilityUi();
+
   applyLocalizedShellText();
   syncAdminTabLabels();
   updateMobileHeader();
   ensureAttentionTodayPanel();
   syncNotificationsForCurrentGarden();
-}
-
-function updateShadeMapAvailabilityUi(): void {
-  const available = shadeMapBrowserEnabled && (authProfile?.shademap_available ?? false);
-  const shadePanelEl = document.getElementById("shade-panel");
-  if (shadePanelEl) shadePanelEl.hidden = !available;
-  const mobileShadeBtn = queryButton("mobile-map-shade-btn");
-  if (mobileShadeBtn) {
-    mobileShadeBtn.hidden = !available;
-    mobileShadeBtn.disabled = !available;
-    mobileShadeBtn.setAttribute("aria-expanded", "false");
-  }
-  if (!available && isMobileMapSheetOpen("shade-panel")) {
-    setMobileMapSheetOpen(null);
-  }
-  // Re-fit camera after layout change (shade panel shown/hidden affects available width)
-  requestAnimationFrame(() => cameraCtrl?.fitAll());
 }
 
 /** Hide/show all tier-gated UI elements based on the current feature set. */
@@ -7833,7 +7425,7 @@ function clearGardenScopedStateForSwitch(): void {
   clearFocusedPlantIds();
   clearPlantSelection();
   clearJournalMediaPreviewCache();
-  clearElevationAvailability(false);
+
   resetMapLayoutForGardenSwitch();
   state.plots = [];
   state.mapObjects = [];
@@ -7842,7 +7434,7 @@ function clearGardenScopedStateForSwitch(): void {
   state.selectedPlotId = null;
   state.selectedPlotIds.clear();
   state.highlightedPlotIds.clear();
-  state.sunlitPlotIds.clear();
+
   state.plotAlerts = null;
   mapInteraction.hiddenZones.clear();
   mapInteraction.activeCatFilter = null;
@@ -7869,7 +7461,7 @@ async function switchGarden(nextGardenId: number): Promise<void> {
   resetNotificationsForCurrentGarden();
   setMobileMapSheetOpen(null);
   setMobileUtilityOpen(false);
-  closeMobileShadeDisclosures();
+
   if (isQuickActionSheetOpen()) closeQuickActionSheet();
   setGardenSwitchPending(true);
   clearGardenScopedStateForSwitch();
@@ -7898,12 +7490,9 @@ async function refreshGardenDataForCurrentContext(): Promise<void> {
     showAdminMfaSetupStatus();
     return;
   }
-  await Promise.all([
-    refreshMapState(),
-    refreshElevationAvailability(),
-  ]);
+  await refreshMapState();
   if (!isCurrentGardenRequest(requestGardenId)) return;
-  if (activeTab === "map" && shouldLoadShadeMapPanelNow()) await ensureShadeMapPanelLoaded();
+
   if (!isCurrentGardenRequest(requestGardenId)) return;
   await refreshActiveNavigationContent();
 }
@@ -8104,11 +7693,7 @@ window.addEventListener("keydown", (e) => {
     setMobileMapSheetOpen(null);
     return;
   }
-  const mobileShadeDisclosureOpen = getTopLevelShadeDisclosures().some((details) => details.open);
-  if (e.key === "Escape" && mobileShadeDisclosureOpen) {
-    closeMobileShadeDisclosures();
-    return;
-  }
+
   if (isInInput()) return;
   if (state.editMode && e.key === "Escape") clearSelection(state, editCbs);
   if (state.editMode && (e.ctrlKey || e.metaKey) && e.key === "a") {
@@ -8127,13 +7712,13 @@ document.addEventListener("focusin", (e) => {
 
 window.addEventListener("resize", () => {
   cameraCtrl?.fitAll();
-  shadePanel?.invalidateSize();
+
   syncMobileCapabilities();
   if (!isMobile()) {
     attentionTodayPanel?.closeMobileSheet();
     setMobileUtilityOpen(false);
     setMobileMapSheetOpen(null);
-    closeMobileShadeDisclosures();
+
   }
   syncMobileViewportOffset();
   syncMapLayersCollapsedFromStorage();
@@ -8283,13 +7868,8 @@ async function bootstrapApp(): Promise<void> {
   if (needsOnboarding) return;
   schedulePasskeyPrompt(authProfile);
 
-  await Promise.all([
-    refreshMapState(),
-    refreshElevationAvailability(),
-  ]);
-  if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
-    await ensureShadeMapPanelLoaded();
-  }
+  await refreshMapState();
+
 }
 
 function waitForBootstrapAuthRetry(message: string): Promise<void> {
@@ -8337,13 +7917,8 @@ async function checkOnboardingNeeded(): Promise<boolean> {
       // Reload everything after onboarding or admin dismissal.
       void (async () => {
         await refreshGardenContext();
-        await Promise.all([
-          refreshMapState(),
-          refreshElevationAvailability(),
-        ]);
-        if (activeTab === "map" && shouldLoadShadeMapPanelNow()) {
-          await ensureShadeMapPanelLoaded();
-        }
+        await refreshMapState();
+
         schedulePasskeyPrompt(authProfile);
         resolve(true);
       })();

@@ -4,12 +4,12 @@ This guide covers the normal development loop and PR checks.
 
 ## Local Loop
 
-Install development/test dependencies (including the optional terrain feature
-for the complete test suite), then run the backend. Configuration must be loaded
-by the launcher; importing the application no longer reads `.env` implicitly:
+Install development/test dependencies, then run the backend. Configuration must
+be loaded by the launcher; importing the application no longer reads `.env`
+implicitly:
 
 ```bash
-uv sync --frozen --extra terrain --group test --group lint
+uv sync --frozen --group test --group lint
 uv run --env-file .env uvicorn gardenops.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -546,29 +546,19 @@ node --check scripts/e2e/journeys/offlineAndFailureRecovery.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 
-Phase 7 proves the provider, weather, ShadeMap, and uploaded-terrain seams as
-one shared-state sequence. Administrator, editor, and viewer desktop profiles,
-plus the administrator Pixel 7 profile, use visible controls against real local
-GardenOps routes. The test-only provider adapter is a separately bound,
-loopback-only process, not a browser response mock: it exercises successful
-garden chat, a provider quota response, the GardenOps runtime-script proxy,
-signed terrain tile rendering, uploaded LiDAR lifecycle, saved Shade state,
-calibration, obstacles, and read-only role boundaries. It visibly labels a
-stale forecast and verifies that refresh leaves alert generation at zero; the
-degraded cache itself is unchanged. The loopback runtime proves GardenOps'
-same-origin loading and rendering integration, not vendor simulation accuracy.
-The final database audit projection is exact, and temporary LiDAR, generated
-terrain, media, and download state are empty at teardown. It retains sanitized
-private traces and a manifest only under the ignored complete-journey evidence
-directory.
+Phase 7 exercises the OpenAI chat and stale-weather journeys against real local
+GardenOps routes with a runner-bound loopback provider. Administrator, editor,
+viewer, and mobile profiles retain role-boundary and browser-error checks.
+Sun/shade and terrain cases were retired with that feature; they must not be
+reported as current coverage. Private traces and manifests stay ignored.
 
 Before coordinating a real Phase 7 browser run, validate its static harness and
-provider/terrain contracts:
+provider/weather contracts:
 
 ```bash
 .venv/bin/pytest -q tests/test_complete_journey_e2e_scripts.py -k phase_seven
 node --check scripts/e2e/providers/deterministicLoopbackProvider.cjs
-node --check scripts/e2e/journeys/providersAndTerrain.cjs
+node --check scripts/e2e/journeys/providersAndWeather.cjs
 node --check scripts/check_complete_journeys_e2e.cjs
 ```
 

@@ -12,7 +12,6 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> |
   <a href="#features">Features</a> |
-  <a href="#shademap-integration">ShadeMap</a> |
   <a href="#development-checks">Development</a> |
   <a href="SECURITY.md">Security</a>
 </p>
@@ -34,15 +33,15 @@ folders.
 It is a full-stack FastAPI/PostgreSQL and Vite/TypeScript application with
 schema migrations, backend and frontend test coverage, GitHub Actions, and
 systemd/nginx deployment examples. It is designed for self-hosted instances:
-your data, provider keys, logs, media uploads, and terrain files stay under your
+your data, provider keys, logs, and media uploads stay under your
 control.
 
 ### Operational Strengths
 
 - Private operations hub: maps, plots, plants, tasks, issues, journal entries,
   media, reports, and garden history live in one system.
-- Self-hosted control: location data, photos, logs, provider keys, terrain
-  files, and operational records stay under the operator's control.
+- Self-hosted control: location data, photos, logs, provider keys, and
+  operational records stay under the operator's control.
 - Durable garden memory: observations, treatments, harvests, media, and task
   history are structured so a garden can be managed across seasons instead of
   recreated from scattered notes.
@@ -52,8 +51,8 @@ control.
   actionable tasks, warnings, follow-ups, and recent no-action-needed outcomes
   with user-controlled delivery settings.
 - Built for serious operators: multi-garden memberships, roles, exports,
-  calendar subscriptions, notifications, weather context, optional AI, and
-  ShadeMap support are available for more complex garden operations.
+  calendar subscriptions, notifications, weather context, and optional AI
+  are available for more complex garden operations.
 - Inspectable and maintainable: open source code, migrations, CI checks,
   security controls, deployment examples, and documented configuration make the
   system practical to operate and adapt.
@@ -141,17 +140,6 @@ control.
   diagnosis remain advisory until the user explicitly adds a plant or tracks
   an issue; provider timeouts and quota limits leave garden records unchanged.
 
-### Sun, Shade, And Terrain
-
-- Optional ShadeMap-backed sun and shade panel with saved state, seasonal
-  presets, calibration, obstacles, building features, terrain tile signing, and
-  monthly estimated sun values. Uploaded LiDAR is validated before activation,
-  and derived terrain tiles are cleared when that uploaded source is removed.
-- ShadeMap is a paid third-party service; GardenOps does not provide access,
-  subscriptions, billing, or API keys.
-- Local terrain support is available for operators who keep terrain datasets
-  outside the repository and expose generated terrain tiles through the app.
-
 ### Security And Operations
 
 - Session auth, API-key compatibility mode, roles, MFA support, passkeys,
@@ -170,7 +158,7 @@ git clone <repository-url> gardenops
 cd gardenops
 uv python install 3.14
 uv venv --python 3.14
-uv sync --frozen --extra terrain --group test --group lint
+uv sync --frozen --group test --group lint
 cd frontend && npm ci && cd ..
 cp .env.example .env
 cp .env.test.example .env.test.local
@@ -191,7 +179,7 @@ cd frontend && npm run build && cd ..
 
 Open `http://localhost:8000`.
 
-Provider keys for OpenAI, PlantNet, and server-side ShadeMap can be
+Provider keys for OpenAI and PlantNet can be
 entered later from the platform admin UI. Set `APP_SECRETS_ENCRYPTION_KEY`
 before using admin-managed provider keys; environment provider variables remain
 valid fallbacks.
@@ -209,7 +197,7 @@ without committing secrets or generated artifacts.
 
 Tasks:
 1. Verify or install Python 3.14, uv, Node.js 24, npm, and PostgreSQL 16+.
-2. Install dependencies with `uv sync --frozen --extra terrain --group test --group lint` and
+2. Install dependencies with `uv sync --frozen --group test --group lint` and
    `npm ci` in `frontend/`.
 3. Create local PostgreSQL databases named `gardenops` and `gardenops_test`
    owned by a local `gardenops` role, or ask me before changing system
@@ -233,27 +221,9 @@ public DNS, production databases, or persistent secrets outside this checkout.
 |---|---|
 | Install locally | [docs/installation.md](docs/installation.md) |
 | Configure environment variables | [docs/configuration.md](docs/configuration.md) and [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md) |
-| Enable sun and shade analysis | [docs/shademap.md](docs/shademap.md) |
 | Deploy behind systemd/nginx | [docs/deployment.md](docs/deployment.md) |
 | Contribute or open PRs | [docs/development.md](docs/development.md) and [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Review the security model | [SECURITY.md](SECURITY.md) |
-
-## ShadeMap Integration
-
-GardenOps includes an optional integration with
-[ShadeMap](https://shademap.app/about) for sun and shade analysis. ShadeMap is a
-paid external service, and GardenOps does not provide API keys, subscriptions,
-provider billing, or permission to use ShadeMap in your deployment.
-
-To enable the panel, configure your own platform-admin-managed or environment
-server-side key, browser-safe client key, and GardenOps terrain tile-signing
-secret. The browser talks to GardenOps routes for configuration, saved state,
-calibration, obstacles, building features, and signed terrain tile URLs.
-
-Read [docs/shademap.md](docs/shademap.md) before enabling the feature. It
-explains the required paid access, data flow, key types, calibration, obstacles,
-terrain tiles, local terrain files, rate limits, troubleshooting, and production
-checks.
 
 ## Requirements
 
@@ -383,7 +353,6 @@ RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6379/0
 API_DOCS_ENABLED=false
 CSP_REPORT_ONLY=false
 AUTH_MFA_SECRET_KEY=
-SHADEMAP_TILE_SIGNING_SECRET=<generate-a-unique-random-secret>
 ```
 
 The backend refuses to start with API docs enabled in production or in any

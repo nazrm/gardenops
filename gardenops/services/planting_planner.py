@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Set as AbstractSet
 from datetime import date
 
 from gardenops.db import DbConn
@@ -81,36 +80,6 @@ def _light_profiles(raw: str) -> set[str]:
     if any(term in normalized for term in _SUNLIGHT_SHADE_TERMS):
         profiles.add("shade")
     return profiles
-
-
-def _score_light_match(
-    *,
-    candidate_light: str,
-    plot_id: str,
-    sunlit_plot_ids: AbstractSet[str] | None,
-) -> tuple[int, list[str]]:
-    if not sunlit_plot_ids:
-        return 0, []
-    profiles = _light_profiles(candidate_light)
-    if not profiles:
-        return 0, []
-
-    if plot_id in sunlit_plot_ids:
-        if "sun" in profiles:
-            return 2, ["Matches the current sunlit snapshot for this plot"]
-        if "partial" in profiles:
-            return 1, ["Can handle mixed light in the current sun snapshot"]
-        if "shade" in profiles:
-            return -1, ["Prefers more shade than this plot currently gets"]
-        return 0, []
-
-    if "shade" in profiles:
-        return 2, ["Fits the shadier snapshot for this plot"]
-    if "partial" in profiles:
-        return 1, ["Can handle the partial shade suggested by the current snapshot"]
-    if "sun" in profiles:
-        return -1, ["Prefers more direct sun than this plot currently gets"]
-    return 0, []
 
 
 def _load_recent_harvest_context(
@@ -390,7 +359,6 @@ def get_planting_suggestions(
     target_plot_id: str | None = None,
     goal: str | None = None,
     limit: int = 10,
-    sunlit_plot_ids: AbstractSet[str] | None = None,
 ) -> dict:
     """Generate planting suggestions for empty/weak plots.
 
@@ -576,14 +544,6 @@ def get_planting_suggestions(
             elif goal == "low_maintenance" and c_hardiness >= 5:
                 score += 2
                 reasons.append("Low maintenance / very hardy (goal match)")
-
-            light_score, light_reasons = _score_light_match(
-                candidate_light=c_light,
-                plot_id=plot_id,
-                sunlit_plot_ids=sunlit_plot_ids,
-            )
-            score += light_score
-            reasons.extend(light_reasons)
 
             # Companion / conflict scoring
             companion_info = check_companions(

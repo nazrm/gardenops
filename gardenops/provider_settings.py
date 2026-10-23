@@ -5,14 +5,12 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from importlib.util import find_spec
 from typing import Literal
 
 from gardenops.db import DbConn, get_db, return_db
 from gardenops.platform_secrets import (
     OPENAI_API_KEY,
     PLANTNET_API_KEY,
-    SHADEMAP_API_KEY,
     ConfigurationError,
     SecretMetadata,
     clear_database_secret,
@@ -34,33 +32,14 @@ OPENAI_MODEL_SETTING = "openai_model"
 OPENAI_FAST_MODEL_SETTING = "openai_fast_model"
 
 SUPPORTED_AI_PROVIDERS: frozenset[str] = frozenset({"disabled", "openai"})
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
 OPENAI_API_KEY_ENVS = ("OPENAI_API_KEY",)
 PLANTNET_API_KEY_ENVS = ("PLANTNET_API_KEY",)
-SHADEMAP_API_KEY_ENVS = ("SHADEMAP", "SHADEMAP_API_KEY", "SHADEMAP_KEY")
 
 SECRET_ENV_NAMES: dict[str, tuple[str, ...]] = {
     OPENAI_API_KEY: OPENAI_API_KEY_ENVS,
     PLANTNET_API_KEY: PLANTNET_API_KEY_ENVS,
-    SHADEMAP_API_KEY: SHADEMAP_API_KEY_ENVS,
 }
-
-
-def shademap_enabled() -> bool:
-    """Return whether ShadeMap routes and browser availability are enabled."""
-
-    raw = os.environ.get("SHADEMAP_ENABLED", "").strip().lower()
-    if not raw:
-        return all(find_spec(name) is not None for name in ("numpy", "laspy", "pyproj"))
-    if raw in _TRUE_VALUES:
-        if not all(find_spec(name) is not None for name in ("numpy", "laspy", "pyproj")):
-            raise ConfigurationError("ShadeMap requires installation with --extra terrain")
-        return True
-    if raw in _FALSE_VALUES:
-        return False
-    raise ConfigurationError("SHADEMAP_ENABLED must be true or false")
 
 
 @dataclass(frozen=True)
@@ -219,18 +198,6 @@ def get_plantnet_api_key(conn: DbConn | None = None) -> str | None:
         if conn is not None:
             raise
         return _env_value(PLANTNET_API_KEY_ENVS) or None
-
-
-def get_shademap_api_key(conn: DbConn | None = None) -> str | None:
-    try:
-        return _with_connection(
-            conn,
-            lambda active_conn: _secret_value(active_conn, SHADEMAP_API_KEY, SHADEMAP_API_KEY_ENVS),
-        )
-    except RuntimeError:
-        if conn is not None:
-            raise
-        return _env_value(SHADEMAP_API_KEY_ENVS) or None
 
 
 def _updated_by_usernames(conn: DbConn, metadata: Iterable[SecretMetadata]) -> dict[int, str]:
