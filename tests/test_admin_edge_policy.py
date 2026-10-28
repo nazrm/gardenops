@@ -206,8 +206,10 @@ class TestAdminEdgePolicy(unittest.TestCase):
 
     def test_production_nginx_template_redacts_token_bearing_access_log_paths(self) -> None:
         self.assertIn("log_format gardenops_redacted", self.nginx_config)
-        self.assertIn("/calendar/subscriptions/[redacted].ics", self.nginx_config)
-        self.assertIn("$uri?[redacted]", self.nginx_config)
+        self.assertIn("/calendar/subscriptions/[redacted]", self.nginx_config)
+        self.assertIn("map $uri $gardenops_log_uri", self.nginx_config)
+        self.assertNotIn("$http_referer", self.nginx_config)
+        self.assertEqual(self.nginx_config.count("access_log /var/log/nginx/gardenops-access.log gardenops_redacted;"), 2)
         self.assertIn(
             "access_log /var/log/nginx/gardenops-access.log gardenops_redacted;",
             self.nginx_config,

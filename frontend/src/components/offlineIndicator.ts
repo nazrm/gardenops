@@ -12,6 +12,7 @@ export interface OfflineIndicatorCallbacks {
 
 export interface OfflineIndicatorState {
   quarantinedCount?: number;
+  oldQuarantinedCount?: number;
   canDiscardDrafts?: boolean;
   canRetryDrafts?: boolean;
   failedDrafts: OfflineDraft[];
@@ -142,6 +143,7 @@ export function renderOfflineIndicator(
     pendingCount,
     syncingCount,
     quarantinedCount = 0,
+    oldQuarantinedCount = 0,
   } = state;
   const hasRecoveryWork = failedDrafts.length > 0 || quarantinedCount > 0;
   const previousFailedIds = new Set(
@@ -259,7 +261,9 @@ export function renderOfflineIndicator(
     row.dataset["draftId"] = "quarantined";
     const notice = document.createElement("span");
     notice.className = "offline-failure-label";
-    notice.textContent = t("offline.quarantined_notice");
+    notice.textContent = oldQuarantinedCount > 0
+      ? t("offline.quarantined_old_notice", { count: oldQuarantinedCount })
+      : t("offline.quarantined_notice");
     row.appendChild(notice);
     if (canDiscardDrafts && callbacks?.onDiscardQuarantined) {
       const discard = document.createElement("button");

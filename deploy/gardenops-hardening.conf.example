@@ -1,0 +1,15 @@
+[Service]
+UMask=0077
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
