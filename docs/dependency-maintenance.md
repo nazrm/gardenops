@@ -1,31 +1,20 @@
-# Dependency maintenance, 27 October 2026
+# Dependency maintenance, 28 October 2026
 
-This update starts from live commit `c55a251c3ff90de9f4db61f10a32e04c5ae25966`
-and incorporates its same-code main merge. The Python pin advances from
-3.14.9 to 3.14.10, so production rebuilds use the expedited security release.
-[Python 3.14.10](https://www.python.org/downloads/release/python-31410/)
-distrusts compromised eMudhra intermediate CA keys (CVE-2026-115557),
-rejects destination-replacing links in tarfile filters (CVE-2026-114583),
-and rejects negative cookie versions.
+This update derives from live commit `97b697c49f80574614ac3f40f2f605a1e75d0580`
+and incorporates its identical-code main merge. The exact audit-profile pip pin
+advances from 26.2.1 to 26.2.2, an age-eligible stable patch. Runtime Python
+remains 3.14.10. No application, authentication, migration or CI changes are made.
 
-httpx2 and httpcore2 advance from 2.14.0 to 2.15.1. The
-[HTTP client release notes](https://github.com/pydantic/httpx2/blob/main/src/httpx2/CHANGELOG.md)
-describe reuse of the default Linux SSL context, preventing increasing CPU use
-across repeated handshakes with older OpenSSL. Python 3.10 support was removed;
-GardenOps already requires Python 3.14. Application APIs and optional-provider
-configuration require no changes.
+The daily registry check covers every Python lock entry and all direct,
+transitive and exact npm pins. The complete locked Python audit and frontend
+npm audit are clear. Trusted current-main source, Action-pin, advisory-delta and
+seven-day release-age checks pass without an exception. Newer HTTP clients,
+OpenAI, certificate/parser packages, PostCSS and Rolldown remain inside the
+cooldown. Existing framework/compiler/native tool compatibility bounds remain.
 
-Daily registry checks cover direct, transitive and exact-version dependencies.
-The locked Python graph and frontend audit have no known advisories. Trusted
-current-main scripts validate sources, Action pins, advisory deltas and Python/npm
-release ages; the HTTP packages satisfy the seven-day intake window without an
-exception. Newer httpx2/httpcore2, OpenAI, Starlette, PostCSS, Rolldown and other
-routine releases remain deferred inside the cooldown. Existing exact framework,
-compiler and tool compatibility pins remain unchanged. The filelock 4.2.4 security
-fix remains in the audit-only profile.
-
-Validation uses locked installs, the complete four-shard disposable PostgreSQL
-suite, ruff checks/format, environment/Action/raw-HTML guards, frontend contracts,
-types, build and asset checks, and real-backend disposable authentication/provider
-browser journeys. Migration digests are unchanged. No application features, CI
-or maintenance-policy changes are included.
+Validation includes frozen installs, the complete four-shard disposable
+PostgreSQL suite, ruff checks/format, environment and raw-HTML guards, frontend
+contracts/types/assets and disposable provider/authentication browser journeys.
+The additional complete-journeys phase-0 harness timed out awaiting the password
+field after starting WebAuthn on the desktop profile; no authentication setting
+or test policy is changed to bypass it. Migration trees remain identical.
