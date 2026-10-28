@@ -182,7 +182,7 @@ const sources = Object.fromEntries(['services/offlineQueue', 'features/offlineFe
         const tx = rawDb.transaction('drafts', 'readwrite');
         for (const [index, status] of ['pending', 'failed'].entries()) {
           tx.objectStore('drafts').add({ type: 'journal', status, garden_id: index + 1,
-            operation_id: `legacy-${index}`, created_at_ms: 1, retry_count: 0,
+            operation_id: `legacy-${index}`, created_at_ms: Date.now(), retry_count: 0,
             last_error: 'SECRET_ERROR', payload: { title: 'SECRET_TITLE', _serialized_media: [{ name: 'SECRET_FILE' }] } });
         }
         tx.oncomplete = resolve;
@@ -201,20 +201,29 @@ const sources = Object.fromEntries(['services/offlineQueue', 'features/offlineFe
         check(!await q.retryDraft(legacyRows[1].id), 'legacy failure retried');
         await q.removeDraft(legacyRows[0].id);
       }
+      await new Promise((resolve, reject) => {
+        const tx = rawDb.transaction('drafts', 'readwrite');
+        tx.objectStore('drafts').add({ type: 'journal', status: 'pending', garden_id: 1,
+          operation_id: 'expired-legacy', created_at_ms: Date.now() - 91 * 24 * 60 * 60 * 1000,
+          retry_count: 0, last_error: '', payload: { title: 'EXPIRED_SECRET' } });
+        tx.oncomplete = resolve;
+        tx.onabort = tx.onerror = () => reject(tx.error);
+      });
       await q.clearOfflineQueue();
       q.setOfflineQueueIdentity('bob');
-      check(JSON.stringify(await rawRows()) === JSON.stringify(legacyRows), 'legacy rows changed during login cleanup');
+      check((await rawRows()).length === 3 && (await q.getOfflineQueueSnapshot()).oldQuarantinedCount === 1,
+        'old unverified work was deleted or not identified');
       online = true;
       await f.refreshOfflineIndicator();
       const wrapper = document.getElementById('offline-indicator');
-      check(!wrapper.hidden && wrapper.textContent.includes('offline.quarantined_count{"count":2}'), 'legacy-only count hidden');
+      check(!wrapper.hidden && wrapper.textContent.includes('offline.quarantined_count{"count":3}'), 'legacy-only count hidden');
       wrapper.querySelector('.offline-indicator-toggle').click();
-      check(!wrapper.querySelector('.offline-failures').hidden && wrapper.textContent.includes('offline.quarantined_notice'), 'generic notice absent');
+      check(!wrapper.querySelector('.offline-failures').hidden && wrapper.textContent.includes('offline.quarantined_old_notice{"count":1}'), 'age notice absent');
       check(!wrapper.innerHTML.includes('SECRET') && !wrapper.querySelector('.offline-retry-btn') && !wrapper.querySelector('.offline-saved-btn'), 'legacy details or recovery exposed');
       confirmResult = false;
       wrapper.querySelector('.offline-quarantine-discard-btn').click();
       await new Promise(resolve => setTimeout(resolve, 20));
-      check(confirmations.at(-1) === 'offline.discard_quarantined_confirm' && (await rawRows()).length === 2, 'cancelled discard removed legacy rows');
+      check(confirmations.at(-1) === 'offline.discard_quarantined_confirm' && (await rawRows()).length === 3, 'cancelled discard removed legacy rows');
       // Successful owned replay must not announce completion over quarantined work.
       await q.enqueueDraft('task_complete', { task_id: 'mixed', expected_updated_at_ms: 5 });
       toasts.length = 0;

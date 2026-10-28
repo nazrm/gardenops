@@ -5,6 +5,7 @@ const DB_NAME = "gardenops-offline";
 const STORE_NAME = "drafts";
 const DB_VERSION = 4;
 const MAX_RETRIES = 5;
+const QUARANTINED_DRAFT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_TRANSIENT_ATTEMPTS_PER_SYNC = 2;
 const TRANSIENT_RETRY_DELAY_MS = 300;
 const QUEUE_CHANGED_EVENT = "gardenops:offline-queue-changed";
@@ -111,6 +112,7 @@ export interface SyncResult {
 
 export interface OfflineQueueSnapshot {
   quarantinedCount: number;
+  oldQuarantinedCount: number;
   failedDrafts: OfflineDraft[];
   pendingCount: number;
   syncingCount: number;
@@ -158,6 +160,13 @@ function ownsDraft(draft: OfflineDraft): boolean {
 function isQuarantinedDraft(draft: OfflineDraft): boolean {
   const owner = (draft as OwnedDraft).owner_id;
   return typeof owner !== "string" || owner.length === 0;
+}
+
+function isOldQuarantinedDraft(draft: OfflineDraft): boolean {
+  return isQuarantinedDraft(draft)
+    && Number.isFinite(draft.created_at_ms)
+    && draft.created_at_ms > 0
+    && draft.created_at_ms < Date.now() - QUARANTINED_DRAFT_MAX_AGE_MS;
 }
 
 export function assertOfflineReplayContext(draft: OfflineDraft): void {
@@ -637,6 +646,7 @@ export async function getOfflineQueueSnapshot(
   return {
     // Device-wide count only: legacy ownership and garden access are unverified.
     quarantinedCount: rows.filter(isQuarantinedDraft).length,
+    oldQuarantinedCount: rows.filter(isOldQuarantinedDraft).length,
     failedDrafts,
     pendingCount: scopedDrafts.filter((draft) => draft.status === "pending").length,
     syncingCount: scopedDrafts.filter((draft) => draft.status === "syncing").length,

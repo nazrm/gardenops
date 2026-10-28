@@ -92,12 +92,22 @@ The `deploy/` directory contains example files:
 
 - `gardenops.service.example`
 - `gardenops-atomic-release.conf.example`
+- `gardenops-hardening.conf.example`
 - `gardenops-atomic-deploy`
 - `gardenops-release-preflight`
 - `nginx.production.example.conf`
 
 Review and adapt them for your host paths, service user, Python environment,
 TLS termination, proxy topology, upload size, log retention, and backup policy.
+The nginx access log omits query strings and referrers and redacts calendar
+subscription tokens. Keep Uvicorn's access log disabled as shown in both service
+examples; the edge log is the HTTP request record. Nginx request-bearing error
+messages for the feed route are suppressed; its response status remains in the
+redacted access log. The retired lidar upload
+route must not retain a large-body nginx exception.
+The offline indicator highlights unverified legacy drafts older than 90 days
+and offers a confirmed discard action. They are never replayed or deleted by
+age alone, since a device clock jump could otherwise destroy unsaved work.
 
 External assistant transports are no longer shipped. Stop any obsolete assistant
 worker and remove its dedicated host credentials according to your retention
@@ -127,6 +137,9 @@ sudo install -d -o root -g root -m 0755 \
 sudo install -o root -g root -m 0644 \
   deploy/gardenops-atomic-release.conf.example \
   /etc/systemd/system/gardenops.service.d/atomic-release.conf
+sudo install -o root -g root -m 0644 \
+  deploy/gardenops-hardening.conf.example \
+  /etc/systemd/system/gardenops.service.d/hardening.conf
 sudo systemctl daemon-reload
 ```
 

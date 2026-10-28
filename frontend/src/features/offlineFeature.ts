@@ -406,6 +406,7 @@ export async function refreshOfflineIndicator(): Promise<void> {
     {
       failedDrafts: snapshot.failedDrafts,
       quarantinedCount: snapshot.quarantinedCount,
+      oldQuarantinedCount: snapshot.oldQuarantinedCount,
       canDiscardDrafts: true,
       canRetryDrafts: canRetryOfflineDrafts(),
       online: isOnline(),
