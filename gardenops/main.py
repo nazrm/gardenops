@@ -369,6 +369,10 @@ def _client_report_path(value: object) -> str:
 
 def _setup_error_log() -> None:
     """Configure a rotating JSONL error log at logs/errors.jsonl."""
+    # Uvicorn's access records include token-bearing URLs; nginx logs redacted paths.
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.disabled = True
+    access_logger.propagate = False
     LOGS_DIR.mkdir(exist_ok=True)
     from logging.handlers import RotatingFileHandler
 
@@ -494,9 +498,8 @@ def _setup_error_log() -> None:
         # The JSONL error handler still filters to WARNING+ via its own level.
         if logging.getLogger().level > logging.DEBUG:
             logging.getLogger().setLevel(logging.DEBUG)
-        # Ensure uvicorn access/error logs propagate to root (and thus Taillight).
-        # Uvicorn sets propagate=False on its loggers by default.
-        for _uv_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        # Preserve server errors in Taillight without forwarding raw access URLs.
+        for _uv_name in ("uvicorn", "uvicorn.error"):
             logging.getLogger(_uv_name).propagate = True
 
 
