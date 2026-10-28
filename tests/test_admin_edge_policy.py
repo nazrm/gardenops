@@ -209,7 +209,8 @@ class TestAdminEdgePolicy(unittest.TestCase):
         self.assertIn("/calendar/subscriptions/[redacted]", self.nginx_config)
         self.assertIn("map $uri $gardenops_log_uri", self.nginx_config)
         self.assertNotIn("$http_referer", self.nginx_config)
-        self.assertEqual(self.nginx_config.count("access_log /var/log/nginx/gardenops-access.log gardenops_redacted;"), 2)
+        redacted_access_log = "access_log /var/log/nginx/gardenops-access.log gardenops_redacted;"
+        self.assertEqual(self.nginx_config.count(redacted_access_log), 2)
         self.assertIn(
             "access_log /var/log/nginx/gardenops-access.log gardenops_redacted;",
             self.nginx_config,

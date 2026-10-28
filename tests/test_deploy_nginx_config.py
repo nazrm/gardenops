@@ -35,11 +35,17 @@ def test_production_nginx_logs_hide_feed_tokens_and_retired_upload_allowance() -
 
 def test_service_examples_disable_duplicate_access_log_and_include_hardening() -> None:
     service = (ROOT / "deploy" / "gardenops.service.example").read_text(encoding="utf-8")
-    release = (ROOT / "deploy" / "gardenops-atomic-release.conf.example").read_text(encoding="utf-8")
+    release = (ROOT / "deploy" / "gardenops-atomic-release.conf.example").read_text(
+        encoding="utf-8"
+    )
     hardening = (ROOT / "deploy" / "gardenops-hardening.conf.example").read_text(encoding="utf-8")
 
     assert "--no-access-log" in service
     assert "--no-access-log" in release
-    for setting in ("PrivateDevices=true", "CapabilityBoundingSet=", "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"):
+    for setting in (
+        "PrivateDevices=true",
+        "CapabilityBoundingSet=",
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+    ):
         assert setting in service
         assert setting in hardening
