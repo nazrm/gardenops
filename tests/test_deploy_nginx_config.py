@@ -42,6 +42,12 @@ def test_service_examples_disable_duplicate_access_log_and_include_hardening() -
 
     assert "--no-access-log" in service
     assert "--no-access-log" in release
+    assert "--log-level warning" in service
+    assert "--log-level warning" in release
+    app = (ROOT / "gardenops" / "main.py").read_text(encoding="utf-8")
+    assert 'access_logger = logging.getLogger("uvicorn.access")' in app
+    assert "access_logger.disabled = True" in app
+    assert 'for _uv_name in ("uvicorn", "uvicorn.error"):' in app
     for setting in (
         "PrivateDevices=true",
         "CapabilityBoundingSet=",

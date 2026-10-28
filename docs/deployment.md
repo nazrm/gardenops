@@ -103,8 +103,9 @@ The nginx access log omits query strings and referrers and redacts calendar
 subscription tokens. Keep Uvicorn's access log disabled as shown in both service
 examples; the edge log is the HTTP request record. Nginx request-bearing error
 messages for the feed route are suppressed; its response status remains in the
-redacted access log. The retired lidar upload
-route must not retain a large-body nginx exception.
+redacted access log. Uvicorn access records are also disabled during app startup
+because the optional external log handler otherwise propagates them. The retired
+lidar upload route must not retain a large-body nginx exception.
 The offline indicator highlights unverified legacy drafts older than 90 days
 and offers a confirmed discard action. They are never replayed or deleted by
 age alone, since a device clock jump could otherwise destroy unsaved work.
