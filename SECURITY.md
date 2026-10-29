@@ -45,3 +45,8 @@ rejected. Routes with stricter audit requirements finalize the reservation in
 the same transaction as their domain change; an interrupted ordinary route
 leaves an explicit incomplete reservation instead of an unaudited successful
 request.
+
+New authenticated media responses use `no-store`, so sign-out or access
+revocation cannot reuse those image responses from the browser cache. Image
+uploads and AI photo preprocessing run in a bounded worker pool to keep
+request handling responsive while images are decoded.

@@ -41,6 +41,7 @@ from gardenops.router_helpers import (
 from gardenops.routers.auth import enforce_destructive_admin_controls
 from gardenops.security import AuthContext
 from gardenops.security_metrics import record_security_event
+from gardenops.services.image_safety import process_image_in_thread
 from gardenops.services.media_store import (
     PreparedMediaAsset,
     collect_orphaned_media_storage_keys,
@@ -1264,7 +1265,8 @@ async def upload_media_asset(
         mutate=True,
     )
     try:
-        prepared = prepare_media_asset(
+        prepared = await process_image_in_thread(
+            prepare_media_asset,
             payload=payload,
             declared_content_type=declared_content_type,
             original_filename=original_filename,
@@ -1319,7 +1321,7 @@ def get_media_preview(asset_id: str, request: Request) -> FileResponse:
         path,
         media_type=mime_type,
         headers={
-            "Cache-Control": "private, max-age=300",
+            "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )
@@ -1332,7 +1334,7 @@ def get_media_original(asset_id: str, request: Request) -> FileResponse:
         path,
         media_type=mime_type,
         headers={
-            "Cache-Control": "private, max-age=300",
+            "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )
