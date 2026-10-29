@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import Field
+from starlette.concurrency import run_in_threadpool
 
 from gardenops.branding import app_user_agent
 from gardenops.db import DB, DbConn
@@ -47,6 +48,7 @@ from gardenops.services.ai_provider import (
 )
 from gardenops.services.garden_qa import answer_garden_question
 from gardenops.services.garden_qa import build_garden_context as build_garden_context_core
+from gardenops.services.image_safety import process_image_in_thread
 from gardenops.services.plant_identification import identify_image_candidates
 from gardenops.services.rhs_plant_resolver import (
     normalize_botanical_name,
@@ -819,13 +821,15 @@ async def identify_plant(
     if not payload:
         raise HTTPException(400, "Image body is required")
     declared_ct = request.headers.get("content-type", "").strip().lower()
-    image_bytes, _ = preprocess_image_for_identification(
+    image_bytes, _ = await process_image_in_thread(
+        preprocess_image_for_identification,
         payload,
         declared_ct,
         max_bytes=max_photo_bytes,
     )
 
-    identification = identify_image_candidates(
+    identification = await run_in_threadpool(
+        identify_image_candidates,
         db,
         auth_context,
         image_bytes=image_bytes,
@@ -1048,7 +1052,8 @@ async def diagnose_plant(
     if not payload:
         raise HTTPException(400, "Image body is required")
     declared_ct = request.headers.get("content-type", "").strip().lower()
-    image_bytes, _ = preprocess_image_for_identification(
+    image_bytes, _ = await process_image_in_thread(
+        preprocess_image_for_identification,
         payload,
         declared_ct,
         max_bytes=max_photo_bytes,
@@ -1072,7 +1077,7 @@ async def diagnose_plant(
                 user_limit=int(limits["user_limit"]),
                 garden_limit=int(limits["garden_limit"]),
             )
-            diagnoses = diagnose_plant_with_ai(image_bytes, prompt_text)
+            diagnoses = await run_in_threadpool(diagnose_plant_with_ai, image_bytes, prompt_text)
     except HTTPException:
         raise
     except AIProviderNotConfigured as exc:
