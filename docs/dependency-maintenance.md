@@ -1,20 +1,26 @@
-# Dependency maintenance, 28 October 2026
+# Dependency maintenance, 29 October 2026
 
-This update derives from live commit `97b697c49f80574614ac3f40f2f605a1e75d0580`
-and incorporates its identical-code main merge. The exact audit-profile pip pin
-advances from 26.2.1 to 26.2.2, an age-eligible stable patch. Runtime Python
-remains 3.14.10. No application, authentication, migration or CI changes are made.
+This update derives from operator-deployed live commit
+`0448f8d7989c638490035c0d8548eb6814c5a021`. The maintenance branch fast-forwards
+to that main commit, retaining its request-log redaction, access-log handling,
+offline behavior and deployment hardening.
+
+The locked OpenAI SDK advances from 3.35.1 to 3.36.1 and its HTTP clients
+httpx2/httpcore2 from 2.15.1 to 2.16.0. Rolldown advances from 1.2.14 to
+1.2.15, including its matching platform bindings and required OXC types.
+All changed packages satisfy the seven-day release-age policy. The host's
+verified same-line runtime update advances the Node pin to 24.22.2; Python
+remains 3.14.10. No application API adaptations or new migrations are needed.
 
 The daily registry check covers every Python lock entry and all direct,
 transitive and exact npm pins. The complete locked Python audit and frontend
 npm audit are clear. Trusted current-main source, Action-pin, advisory-delta and
-seven-day release-age checks pass without an exception. Newer HTTP clients,
-OpenAI, certificate/parser packages, PostCSS and Rolldown remain inside the
+seven-day release-age checks pass without an exception. Newer OpenAI,
+certificate/parser, pytest, Starlette and PostCSS releases remain inside the
 cooldown. Existing framework/compiler/native tool compatibility bounds remain.
 
-Validation includes frozen installs, the complete four-shard disposable
-PostgreSQL suite, ruff checks/format, environment and raw-HTML guards, frontend
-contracts/types/assets and disposable provider/authentication browser journeys.
-The additional complete-journeys phase-0 harness timed out awaiting the password
-field after starting WebAuthn on the desktop profile; no authentication setting
-or test policy is changed to bypass it. Migration trees remain identical.
+Validation includes frozen installs and lock consistency, the complete
+four-shard disposable PostgreSQL suite, ruff checks/format, environment and
+raw-HTML guards, frontend contracts/types/assets and the disposable real-backend
+provider/session browser journey. Optional-provider behavior and migration
+trees are preserved. CI and maintenance policy are unchanged.
