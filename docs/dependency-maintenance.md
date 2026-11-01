@@ -1,5 +1,29 @@
 # Dependency maintenance
 
+## 1 November 2026
+
+Advance the transitive Starlette dependency from 1.9.0 to 1.10.0, which was
+published on 24 October and now satisfies the ordinary seven-day release gate.
+Its form parser uses less memory and CPU, handles a final streamed form field,
+and fixes middleware, URL generation and handled-exception cleanup. Multidict
+equality now preserves the order of repeated values; GardenOps needs no API
+adaptation. FastAPI and all other locked versions remain unchanged.
+
+The update derives from live `25770a54afed47c6dbc21b2272d772bd39841ccd`
+and its identical-source main merge `87a9c98`. Daily checks cover every locked
+Python dependency and direct, transitive and exact npm pins. The full audits
+and trusted current-main source, Action-pin, advisory-delta and release-age
+policies are clear; no security release-age exception is needed. Fresh Python,
+PostCSS and Rolldown releases remain deferred by the existing cooldown.
+
+Validation covers the frontend contracts/types/assets build, ruff and format,
+environment and raw-HTML guards, the complete four-shard disposable PostgreSQL
+suite, disposable database integrity and the real session-form/provider browser
+journey. Authentication settings, optional providers, migration trees, runtime
+release lines, CI and dependency policy are unchanged. The previously recorded
+extra foundation/identity runner limitation remains; that additional runner is
+not part of this dependency-only validation.
+
 ## 31 October 2026
 
 This update derives from live `048f5c359ba76cdf90a1477a92e862b0356e2654`
