@@ -254,3 +254,8 @@ when the migration trees match. Changed migrations still require supervised
 recovery rather than starting potentially incompatible old code.
 A service that was already stopped remains stopped. Failed candidate startup
 continues to use the existing migration-compatible rollback checks.
+
+The deployment poller verifies health and defers when the installed revision is
+strictly ahead of main, for example after an approved local repair. Divergent
+history and failed health still stop the poller; this does not authorize any
+deployment or waive merge/CI requirements.
