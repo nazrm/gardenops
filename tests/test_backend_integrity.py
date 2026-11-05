@@ -141,7 +141,6 @@ class BackendIntegrityAuditTests(DbTestBase):
             "plot_missing_garden_ownership",
             "plot_garden_ownership_mismatch",
             "plant_missing_garden_ownership",
-            "garden_owner_not_active_user",
             "stale_plot_reference.garden_task_plots",
             "stale_plot_reference.media_links_plot",
             "stale_plot_reference.shademap_state",
@@ -151,6 +150,38 @@ class BackendIntegrityAuditTests(DbTestBase):
                 finding = findings[finding_id]
                 self.assertTrue(finding["blocking"])
                 self.assertGreaterEqual(int(finding["count"]), 1)
+
+    def test_deactivated_owner_retains_data_without_blocking_deployment(self) -> None:
+        self.conn.execute("UPDATE auth_users SET is_active = 0 WHERE id = %s", (self._owner_id,))
+        self.conn.execute(
+            "UPDATE gardens SET owner_user_id = %s WHERE id = %s",
+            (self._owner_id, self.garden_id),
+        )
+        report = check_backend_integrity.collect_report(self.conn)
+        findings = self._findings_by_id()
+        self.assertTrue(report["ok"])
+        self.assertEqual(findings["garden_owner_not_active_user"]["count"], 0)
+        self.assertEqual(findings["garden_owner_inactive_user"]["count"], 1)
+        self.assertFalse(findings["garden_owner_inactive_user"]["blocking"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT is_active FROM auth_users WHERE id = %s", (self._owner_id,)
+            ).fetchone()["is_active"],
+            0,
+        )
+
+    def test_missing_owner_still_blocks_deployment(self) -> None:
+        # Simulate a damaged database whose ownership FK was removed.
+        self.conn.execute("ALTER TABLE gardens DROP CONSTRAINT fk_gardens_owner_user_id_auth_users")
+        self.conn.execute(
+            "UPDATE gardens SET owner_user_id = 2147483647 WHERE id = %s", (self.garden_id,)
+        )
+        report = check_backend_integrity.collect_report(self.conn)
+        finding = self._findings_by_id()["garden_owner_not_active_user"]
+        self.assertFalse(report["ok"])
+        self.assertTrue(finding["blocking"])
+        self.assertEqual(finding["count"], 1)
+        self.conn.execute("ROLLBACK")
 
     def test_deferrable_fk_backed_plot_references_are_audited_before_commit(self) -> None:
         event = self.conn.execute(
