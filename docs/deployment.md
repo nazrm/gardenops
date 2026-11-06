@@ -240,3 +240,22 @@ Before exposing a deployment:
 - Confirm API docs are disabled and CSP is enforced.
 - Run the repository checks from [development.md](development.md).
 - Review [SECURITY.md](../SECURITY.md).
+## Local maintenance recovery
+
+Account deactivation deliberately preserves gardens and owned data. The integrity
+audit reports deactivated owners as a nonblocking retention warning; a missing
+owner remains a blocking error. Neither the audit nor deployment reactivates an
+account, transfers ownership, or removes retained data.
+
+Activation runs in a subshell so its EXIT recovery trap retains its local state.
+If migration or the post-migration integrity check fails before the release
+switch, a previously running service is restarted on the unchanged release only
+when the migration trees match. Changed migrations still require supervised
+recovery rather than starting potentially incompatible old code.
+A service that was already stopped remains stopped. Failed candidate startup
+continues to use the existing migration-compatible rollback checks.
+
+The deployment poller verifies health and defers when the installed revision is
+strictly ahead of main, for example after an approved local repair. Divergent
+history and failed health still stop the poller; this does not authorize any
+deployment or waive merge/CI requirements.

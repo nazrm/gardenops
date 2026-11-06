@@ -395,7 +395,7 @@ def _garden_owner_integrity(conn: psycopg.Connection[Any]) -> Finding:
     return _finding_from_query(
         conn,
         finding_id="garden_owner_not_active_user",
-        title="gardens.owner_user_id does not point at an active auth user",
+        title="gardens.owner_user_id references a missing auth user",
         severity="error",
         blocking=True,
         bad_rows_sql="""
@@ -410,7 +410,7 @@ def _garden_owner_integrity(conn: psycopg.Connection[Any]) -> Finding:
             FROM gardens g
             LEFT JOIN auth_users u ON u.id = g.owner_user_id
             WHERE g.owner_user_id IS NOT NULL
-              AND (u.id IS NULL OR u.is_active <> 1)
+              AND u.id IS NULL
         """,
         example_sql="""
             SELECT
@@ -424,9 +424,30 @@ def _garden_owner_integrity(conn: psycopg.Connection[Any]) -> Finding:
             FROM gardens g
             LEFT JOIN auth_users u ON u.id = g.owner_user_id
             WHERE g.owner_user_id IS NOT NULL
-              AND (u.id IS NULL OR u.is_active <> 1)
+              AND u.id IS NULL
             ORDER BY g.id
             LIMIT %s
+        """,
+    )
+
+
+def _inactive_garden_owner_summary(conn: psycopg.Connection[Any]) -> Finding:
+    # Account deletion intentionally deactivates owners and preserves their data.
+    # Authentication still rejects these users; retention is not dangling ownership.
+    return _finding_from_query(
+        conn,
+        finding_id="garden_owner_inactive_user",
+        title="Gardens retain data owned by deactivated users",
+        severity="warning",
+        blocking=False,
+        bad_rows_sql="""
+            SELECT g.id FROM gardens g JOIN auth_users u ON u.id = g.owner_user_id
+            WHERE u.is_active <> 1
+        """,
+        example_sql="""
+            SELECT g.id AS garden_id, g.owner_user_id
+            FROM gardens g JOIN auth_users u ON u.id = g.owner_user_id
+            WHERE u.is_active <> 1 ORDER BY g.id LIMIT %s
         """,
     )
 
@@ -557,6 +578,7 @@ def collect_findings(conn: psycopg.Connection[Any]) -> list[Finding]:
         _plot_garden_ownership_mismatch(conn),
         _missing_plant_ownership(conn),
         _garden_owner_integrity(conn),
+        _inactive_garden_owner_summary(conn),
         _user_hard_delete_ownership_summary(conn),
         _schema_signature(conn),
     ]
