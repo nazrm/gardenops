@@ -241,7 +241,8 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   await visible(details.locator(".plant-journal-history"), `${profile} viewer issue history`);
   await visible(details.locator(".journal-existing-media .media-gallery"),
     `${profile} viewer issue media evidence`);
-  assert(await details.getByRole("button", { name: /remove|delete everywhere/i }).count() === 0,
+  assert(await details.locator(".journal-existing-media .media-gallery")
+    .getByRole("button", { name: /remove|delete everywhere/i }).count() === 0,
     `${profile} viewer received issue media mutation controls`);
   await details.getByRole("button", { name: "Close", exact: true }).click();
 
@@ -307,6 +308,7 @@ async function exerciseJournalAndMedia(page, profile, options) {
   const targets = fixtureTargets(fixture, options.role, "journal");
   const plantId = options.identifiedPlantId || targets.plantId;
   const plotId = targets.plotId;
+  const canMutateTargets = options.role === "admin";
   const eventType = options.identifiedPlantId ? "bloomed" : "observed";
   const title = phaseThree.labels.journal_online;
   const editedTitle = `${title} edited`;
@@ -317,8 +319,8 @@ async function exerciseJournalAndMedia(page, profile, options) {
   await composer.locator("select[name='event_type']").selectOption(eventType);
   await composer.locator("input[name='occurred_on']").fill(phaseThree.date);
   await composer.locator("input[name='title']").fill(title);
-  await composer.locator("textarea[name='notes']").fill("Observed leaf colour and linked the source plant and plot.");
-  await addComposerLinks(composer, plantId, plotId);
+  await composer.locator("textarea[name='notes']").fill("Observed leaf colour in the garden journal.");
+  if (canMutateTargets) await addComposerLinks(composer, plantId, plotId);
   await composer.locator(".media-file-input").setInputFiles([
     mediaInput(options),
     mediaInput(options, "diagnosis"),
@@ -354,8 +356,10 @@ async function exerciseJournalAndMedia(page, profile, options) {
   }
   const card = page.locator(".journal-card").filter({ hasText: title }).first();
   await visible(card, "created journal card");
-  await visible(card.locator(".journal-tag-plant"), "journal plant link");
-  await visible(card.locator(".journal-tag-plot"), "journal plot link");
+  if (canMutateTargets) {
+    await visible(card.locator(".journal-tag-plant"), "journal plant link");
+    await visible(card.locator(".journal-tag-plot"), "journal plot link");
+  }
   await visible(card.locator(".journal-card-thumb"), "journal representative media thumbnail");
   await card.locator(".journal-card-thumb").click();
   const preview = page.locator(".media-lightbox");
@@ -369,7 +373,9 @@ async function exerciseJournalAndMedia(page, profile, options) {
   `Representative media dimensions were ${dimensions.width}x${dimensions.height}`);
   await preview.locator(".media-lightbox-close").click();
 
-  await setPlantCoverThroughUi(page, profile, card, plantId);
+  if (canMutateTargets) {
+    await setPlantCoverThroughUi(page, profile, card, plantId);
+  }
   await openActivityMode(page, profile, "journal", "#journal-tab-content");
   const cardAfterCover = page.locator(".journal-card").filter({ hasText: title }).first();
   await visible(cardAfterCover, "journal card after setting plant cover");
@@ -405,15 +411,15 @@ async function exerciseJournalAndMedia(page, profile, options) {
   assert(await mediaGallery.locator(".media-card").count() === 2,
     "Journal edit gallery did not retain both uploaded media assets");
   for (let remaining = 2; remaining > 0; remaining -= 1) {
-    const deleteEverywhere = mediaGallery
-      .getByRole("button", { name: /delete everywhere/i })
-      .first();
-    await visible(deleteEverywhere, "delete uploaded media everywhere action");
-    await deleteEverywhere.click();
-    await acceptConfirm(page, "delete uploaded media everywhere confirmation");
+    const removeMedia = canMutateTargets
+      ? mediaGallery.getByRole("button", { name: /delete everywhere/i }).first()
+      : mediaGallery.getByRole("button", { name: "Remove", exact: true }).first();
+    await visible(removeMedia, "remove uploaded journal media action");
+    await removeMedia.click();
+    await acceptConfirm(page, "remove uploaded journal media confirmation");
     await waitFor(
       async () => await mediaGallery.locator(".media-card").count() === remaining - 1,
-      `journal media delete everywhere (${remaining - 1} remaining)`,
+      `journal media removal (${remaining - 1} remaining)`,
     );
   }
   await page.keyboard.press("Escape");
@@ -437,8 +443,8 @@ async function exerciseJournalAndMedia(page, profile, options) {
     bloom_date_reconciled: eventType === "bloomed",
     dimensions,
     entry_id: entry.id,
-    linked_plant: plantId,
-    linked_plot: plotId,
+    linked_plant: canMutateTargets ? plantId : null,
+    linked_plot: canMutateTargets ? plotId : null,
   };
 }
 
@@ -556,6 +562,14 @@ function issueCard(page, title) {
   return page.locator(".issue-card").filter({ hasText: title }).first();
 }
 
+async function closeIssueDetailsIfOpen(page) {
+  const details = page.getByRole("dialog", { name: "Issue", exact: true });
+  if (await details.isVisible()) {
+    await page.keyboard.press("Escape");
+    await details.waitFor({ state: "detached" });
+  }
+}
+
 async function exerciseDiagnosisAndIssue(page, profile, options) {
   const phaseThree = phaseThreeFixture(options.fixture);
   const { plantId, plotId } = fixtureTargets(options.fixture, options.role, "issue");
@@ -576,36 +590,46 @@ async function exerciseDiagnosisAndIssue(page, profile, options) {
   await page.locator("#issues-add-btn").click();
   const issueDialog = page.getByRole("dialog").last();
   await visible(issueDialog, "new issue dialog");
-  const diagnoseButton = issueDialog.getByRole("button", { name: "What's wrong?" });
+  const diagnoseButton = issueDialog.getByRole("button", { name: "Diagnose from a photo" });
   await visible(diagnoseButton, "diagnosis advisory entry point");
   await diagnoseButton.click();
-  const diagnosis = page.getByRole("dialog", { name: "What's wrong?" });
+  const diagnosis = page.getByRole("dialog", { name: "Diagnose from a photo" });
   await visible(diagnosis, "diagnosis advisory dialog");
   await diagnosis.locator("input[type='file']").setInputFiles(mediaInput(options, "diagnosis"));
-  const diagnosisPreview = diagnosis.locator(".identify-photo-preview");
-  await visible(diagnosisPreview, "diagnosis image preview");
-  const diagnosisDimensions = await diagnosisPreview.evaluate((image) => ({
-    naturalHeight: image.naturalHeight,
-    naturalWidth: image.naturalWidth,
-  }));
-  assert(
-    diagnosisDimensions.naturalWidth === phaseThree.media.oriented_jpeg.normalized_width
-      && diagnosisDimensions.naturalHeight === phaseThree.media.oriented_jpeg.normalized_height,
-    `Oriented diagnosis preview was ${diagnosisDimensions.naturalWidth}x${diagnosisDimensions.naturalHeight}`,
-  );
+  const diagnosisResponse = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/ai/diagnose-plant"
+  ));
   await diagnosis.getByRole("button", { name: "Diagnose", exact: true }).click();
-  await visible(diagnosis.locator(".diagnosis-disclaimer"), "diagnosis advisory disclaimer");
+  assert((await diagnosisResponse).status() === 200, "Photo diagnosis failed");
+  const advisory = diagnosis.getByRole("status");
+  await visible(advisory, "diagnosis advisory result");
+  await waitFor(async () => (await advisory.innerText()).includes("AI-assisted assessment"),
+    "diagnosis advisory disclaimer");
   assert(await page.locator(".issue-card").count() === beforeCount,
-    "Diagnosis advisory mutated issue state before explicit tracking");
-  const track = diagnosis.getByRole("button", { name: /track this issue/i }).first();
-  await visible(track, "diagnosis explicit track-this-issue action");
-  await track.click();
-  await waitFor(async () => await page.locator(".issue-card").count() === beforeCount + 1,
-    "diagnosis issue tracking");
-  const trackedIssueForm = page.locator(".modal-form").last();
-  if (await trackedIssueForm.isVisible()) await page.keyboard.press("Escape");
+    "Diagnosis advisory mutated issue state before explicit saving");
+  const useDiagnosis = diagnosis.getByRole("button", { name: "Use diagnosis", exact: true }).first();
+  await visible(useDiagnosis, "explicit use-diagnosis action");
+  await useDiagnosis.click();
+  await diagnosis.waitFor({ state: "detached" });
+  const prefilled = issueDialog.locator(".modal-form");
+  await visible(prefilled, "diagnosis-prefilled issue form");
+  assert(await prefilled.locator("input[name='title']").inputValue() === "Dry soil",
+    "Diagnosis did not prefill the issue title");
+  assert(await prefilled.locator("select[name='issue_type']").inputValue() === "environmental",
+    "Diagnosis did not prefill the issue type");
+  assert(await page.locator(".issue-card").count() === beforeCount,
+    "Using a diagnosis saved an issue without explicit confirmation");
+  const diagnosedCreateResponse = page.waitForResponse((response) => (
+    response.request().method() === "POST" && new URL(response.url()).pathname === "/api/issues"
+  ));
+  await prefilled.getByRole("button", { name: "Save", exact: true }).click();
+  assert((await diagnosedCreateResponse).status() === 201,
+    "Explicit diagnosis issue save did not create an issue");
   const diagnosedCard = issueCard(page, "Dry soil");
-  await visible(diagnosedCard, "diagnosis-created issue card");
+  await visible(diagnosedCard, "explicitly saved diagnosis issue");
+  await visible(page.locator(".plant-journal-history"), "saved diagnosis issue details");
+  await closeIssueDetailsIfOpen(page);
   await diagnosedCard.getByRole("button", { name: "Delete", exact: true }).click();
   await acceptConfirm(page, "diagnosed issue cleanup confirmation");
 
@@ -639,7 +663,8 @@ async function exerciseDiagnosisAndIssue(page, profile, options) {
   const createdIssue = await createdIssueResponse.json();
   const card = issueCard(page, title);
   await visible(card, "created issue card");
-  await card.getByRole("button", { name: "Settings", exact: true }).click();
+  await closeIssueDetailsIfOpen(page);
+  await card.getByRole("button", { name: "Edit", exact: true }).click();
   const edit = page.locator(".modal-form").last();
   await visible(edit, "issue edit form and history");
   await visible(page.locator(".plant-journal-history"), "issue history section");
@@ -647,9 +672,10 @@ async function exerciseDiagnosisAndIssue(page, profile, options) {
   await edit.locator("select[name='severity']").selectOption("normal");
   await edit.getByRole("button", { name: "Save", exact: true }).click();
   await visible(issueCard(page, title), "updated issue card");
-  await issueCard(page, title).getByRole("button", { name: "Settings", exact: true }).click();
+  await closeIssueDetailsIfOpen(page);
+  await issueCard(page, title).getByRole("button", { name: "Edit", exact: true }).click();
   await visible(page.locator(".plant-journal-history .journal-preview-row").first(), "issue update history row");
-  await page.keyboard.press("Escape");
+  await closeIssueDetailsIfOpen(page);
   await issueCard(page, title).getByRole("button", { name: "Resolve", exact: true }).click();
   await acceptConfirm(page, "issue resolve confirmation");
   const resolved = issueCard(page, title);
@@ -667,7 +693,7 @@ async function exerciseDiagnosisAndIssue(page, profile, options) {
   await acceptConfirm(page, "issue delete confirmation");
   await resolved.waitFor({ state: "detached" });
   return {
-    advisory_non_mutating_before_track: true,
+    advisory_non_mutating_before_save: true,
     create_edit_follow_up_history_resolve_delete: true,
     repeated_resolve_status: repeatedResolve.status,
     reopen_ui_available: true,
@@ -691,10 +717,10 @@ async function exerciseDiagnosisAdvisory(page, profile, options) {
   await page.locator("#issues-add-btn").click();
   const issueDialog = page.getByRole("dialog").last();
   await visible(issueDialog, "new issue dialog");
-  const diagnoseButton = issueDialog.getByRole("button", { name: "What's wrong?" });
+  const diagnoseButton = issueDialog.getByRole("button", { name: "Diagnose from a photo" });
   await visible(diagnoseButton, "diagnosis advisory entry point");
   await diagnoseButton.click();
-  const diagnosis = page.getByRole("dialog", { name: "What's wrong?" });
+  const diagnosis = page.getByRole("dialog", { name: "Diagnose from a photo" });
   await visible(diagnosis, "diagnosis advisory dialog");
   await diagnosis.locator("input[type='file']").setInputFiles(mediaInput(options, "diagnosis"));
   const responsePromise = page.waitForResponse((response) => (
@@ -703,16 +729,19 @@ async function exerciseDiagnosisAdvisory(page, profile, options) {
   ));
   await diagnosis.getByRole("button", { name: "Diagnose", exact: true }).click();
   assert((await responsePromise).status() === 200, "Photo diagnosis returned a non-success response");
-  await visible(diagnosis.locator(".diagnosis-disclaimer"), "diagnosis advisory disclaimer");
-  await visible(diagnosis.getByRole("button", { name: /track this issue/i }).first(),
-    "diagnosis explicit track-this-issue action");
+  const advisory = diagnosis.getByRole("status");
+  await waitFor(async () => (await advisory.innerText()).includes("AI-assisted assessment"),
+    "diagnosis advisory disclaimer");
+  await visible(diagnosis.getByRole("button", { name: "Use diagnosis", exact: true }).first(),
+    "diagnosis explicit use-diagnosis action");
   assert(await page.locator(".issue-card").count() === beforeCount,
-    "Diagnosis advisory mutated issue state before explicit tracking");
-  await diagnosis.getByRole("button", { name: "Close", exact: true }).click();
+    "Diagnosis advisory mutated issue state before explicit saving");
+  await diagnosis.getByRole("button", { name: "Close Diagnose from a photo" }).click();
   await diagnosis.waitFor({ state: "detached" });
+  await issueDialog.getByRole("button", { name: "Close Issue" }).click();
   return {
     advisory_non_mutating: true,
-    explicit_track_action_available: true,
+    explicit_use_diagnosis_action_available: true,
   };
 }
 
@@ -760,13 +789,14 @@ async function exerciseHarvest(page, profile, options) {
   }
   await fillHarvest(form, { date: phaseThree.date, notes, quantity: "1.25", unit: "kg" });
   await form.locator("input[name='plant_ids']").fill(plantId);
-  await form.locator("input[name='plot_ids']").fill(plotId);
+  await form.locator(".chip-input__field").fill(plotId);
+  await page.getByRole("option").filter({ hasText: plotId }).first().click();
   await form.locator(".media-file-input").setInputFiles(mediaInput(options));
   await form.getByRole("button", { name: "Save", exact: true }).click();
   const card = harvestCard(page, notes);
   await visible(card, "created harvest card");
   await visible(card.getByText("1.25", { exact: true }), "harvest decimal quantity");
-  await card.getByRole("button", { name: "Settings", exact: true }).click();
+  await card.getByRole("button", { name: "Edit", exact: true }).click();
   const edit = page.locator(".harvest-form, .modal-form").last();
   await edit.locator("textarea[name='notes']").fill(`${notes} edited`);
   await edit.locator("input[name='quantity']").fill("2.25");
@@ -958,7 +988,8 @@ async function enqueueOfflineCreate(page, profile, options, kind) {
       unit: "kg",
     });
     await form.locator("input[name='plant_ids']").fill(plantId);
-    await form.locator("input[name='plot_ids']").fill(plotId);
+    await form.locator(".chip-input__field").fill(plotId);
+    await page.getByRole("option").filter({ hasText: plotId }).first().click();
     await form.locator(".media-file-input").setInputFiles(mediaInput(options));
     await form.getByRole("button", { name: "Save", exact: true }).click();
   }
@@ -996,6 +1027,8 @@ async function exerciseOfflineCreates(page, context, diagnostics, profile, optio
   for (const kind of ["journal", "issue_create", "harvest_create"]) {
     titles.push(await enqueueOfflineCreate(page, profile, options, kind));
   }
+  await waitFor(async () => (await readOfflineDrafts(page)).length === 3,
+    "three offline creates queued");
   page.off("requestfailed", captureOfflineFailure);
   assert(offlineFailures.length >= offlinePaths.size,
     `Expected offline read failures for three domains, got ${offlineFailures.length}`);
@@ -1100,6 +1133,7 @@ async function exerciseOfflineCreates(page, context, diagnostics, profile, optio
     "three distinct offline create replays after lost acknowledgement",
   );
   await waitFor(async () => (await readOfflineDrafts(page)).length === 0, "offline create queue to drain");
+  await page.waitForLoadState("networkidle");
   await context.setOffline(true);
   await context.setOffline(false);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));

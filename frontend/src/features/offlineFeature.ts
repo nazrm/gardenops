@@ -249,6 +249,8 @@ export function getOfflineSyncCallbacks(): SyncCallbacks {
           ],
           draft,
         );
+        assertOfflineReplayContext(draft);
+        await onJournalEntrySaved?.(entryId, gardenId);
       }
     },
     task_complete: async (payload, draft) => {

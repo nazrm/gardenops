@@ -7,11 +7,19 @@ import gardenops.db as db
 from gardenops.db import current_timestamp_ms
 from gardenops.rate_limit import acquire_concurrency_slot
 from gardenops.security import create_user
+from gardenops.services.observation_clock import observation_today
 from gardenops.services.task_generator import generate_tasks
 from tests.base import BaseApiTest, strong_password
 
 
 class TestTasks(BaseApiTest):
+    def _completion_day(self, task_id: str) -> date:
+        response = self.client.get(f"/api/tasks/{task_id}")
+        self.assertEqual(response.status_code, 200)
+        completed_at_ms = response.json()["completed_at_ms"]
+        self.assertIsInstance(completed_at_ms, int)
+        return observation_today(now_ms=completed_at_ms)
+
     def test_description_refresh_reserves_each_provider_batch(self) -> None:
         from fastapi import HTTPException
 
@@ -636,7 +644,7 @@ class TestTasks(BaseApiTest):
             },
         )
         task_id3 = r.json()["id"]
-        snooze_until = (date.today() + timedelta(days=7)).isoformat()
+        snooze_until = (observation_today() + timedelta(days=7)).isoformat()
         r = self.client.post(
             f"/api/tasks/{task_id3}/action",
             json={
@@ -1770,11 +1778,12 @@ class TestTasks(BaseApiTest):
 
         task = self.client.get(f"/api/tasks/{task_id}").json()
         self.assertEqual(task["status"], "completed")
+        completed_day = self._completion_day(task_id)
 
         journal = self.client.get("/api/journal?event_type=bloomed&plant_id=PLT-TEST").json()
         self.assertEqual(journal["total"], 1)
         entry = journal["entries"][0]
-        self.assertEqual(entry["occurred_on"], date.today().isoformat())
+        self.assertEqual(entry["occurred_on"], completed_day.isoformat())
         self.assertEqual(entry["plant_ids"], ["PLT-TEST"])
         self.assertEqual(entry["plot_ids"], ["B1"])
         self.assertEqual(entry["metadata"]["source"], "task_completion")
@@ -1785,19 +1794,19 @@ class TestTasks(BaseApiTest):
             plant["plt_id"]: plant for plant in self.client.get("/api/plants?q=Test Plant").json()
         }
         self.assertTrue(plants["PLT-TEST"]["seen_growing"])
-        self.assertEqual(plants["PLT-TEST"]["seen_growing_date"], date.today().isoformat())
-        self.assertEqual(plants["PLT-TEST"]["seen_growing_year"], date.today().year)
+        self.assertEqual(plants["PLT-TEST"]["seen_growing_date"], completed_day.isoformat())
+        self.assertEqual(plants["PLT-TEST"]["seen_growing_year"], completed_day.year)
         self.assertTrue(plants["PLT-TEST"]["seen_growing_is_current_year"])
-        self.assertEqual(plants["PLT-TEST"]["last_bloomed_on"], date.today().isoformat())
-        self.assertEqual(plants["PLT-TEST"]["last_bloomed_year"], date.today().year)
+        self.assertEqual(plants["PLT-TEST"]["last_bloomed_on"], completed_day.isoformat())
+        self.assertEqual(plants["PLT-TEST"]["last_bloomed_year"], completed_day.year)
         self.assertTrue(plants["PLT-TEST"]["bloomed_this_year"])
         self.assertEqual(plants["PLT-TEST"]["presence_status"], "present")
         assignments = self.client.get("/api/plants/PLT-TEST/assignments").json()
         self.assertEqual(len(assignments), 1)
         self.assertEqual(assignments[0]["plot_id"], "B1")
         self.assertTrue(assignments[0]["seen_growing"])
-        self.assertEqual(assignments[0]["seen_growing_date"], date.today().isoformat())
-        self.assertEqual(assignments[0]["seen_growing_year"], date.today().year)
+        self.assertEqual(assignments[0]["seen_growing_date"], completed_day.isoformat())
+        self.assertEqual(assignments[0]["seen_growing_year"], completed_day.year)
         self.assertTrue(assignments[0]["seen_growing_is_current_year"])
 
     def test_observe_bloom_completion_is_idempotent(self) -> None:
@@ -1890,6 +1899,7 @@ class TestTasks(BaseApiTest):
             json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(response.status_code, 200)
+        completed_day = self._completion_day(task_id)
 
         assignments = self.client.get("/api/plants/PLT-002/assignments").json()
         self.assertEqual(len(assignments), 1)
@@ -1898,7 +1908,7 @@ class TestTasks(BaseApiTest):
         self.assertIsNone(assignments[0]["seen_growing_date"])
         plants = {plant["plt_id"]: plant for plant in self.client.get("/api/plants?q=Rose").json()}
         self.assertTrue(plants["PLT-002"]["seen_growing"])
-        self.assertEqual(plants["PLT-002"]["seen_growing_date"], date.today().isoformat())
+        self.assertEqual(plants["PLT-002"]["seen_growing_date"], completed_day.isoformat())
         self.assertEqual(plants["PLT-002"]["presence_status"], "present")
 
     def test_observe_bloom_task_rejects_peer_owned_plant_side_effect(self) -> None:
@@ -2040,6 +2050,7 @@ class TestTasks(BaseApiTest):
             json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(response.status_code, 200)
+        completed_day = self._completion_day(task_id)
 
         assignments = self.client.get("/api/plants/BL-AMBIG/assignments").json()
         self.assertEqual(len(assignments), 2)
@@ -2050,13 +2061,13 @@ class TestTasks(BaseApiTest):
             for plant in self.client.get("/api/plants?q=Ambiguous Bloom").json()
         }
         self.assertTrue(plants["BL-AMBIG"]["seen_growing"])
-        self.assertEqual(plants["BL-AMBIG"]["seen_growing_date"], date.today().isoformat())
+        self.assertEqual(plants["BL-AMBIG"]["seen_growing_date"], completed_day.isoformat())
         self.assertEqual(plants["BL-AMBIG"]["presence_status"], "present")
 
     def test_observe_bloom_completion_keeps_multi_plot_not_seen_history_but_marks_plant_present(
         self,
     ) -> None:
-        current_year = date.today().year
+        current_year = observation_today().year
         previous_year = current_year - 1
         create = self.client.post(
             "/api/plants",
@@ -2109,6 +2120,7 @@ class TestTasks(BaseApiTest):
             json={"action": "complete", "completion_outcome": "done"},
         )
         self.assertEqual(response.status_code, 200)
+        completed_day = self._completion_day(task_id)
 
         assignments = self.client.get("/api/plants/BL-MIXED/assignments").json()
         self.assertEqual(len(assignments), 2)
@@ -2122,7 +2134,7 @@ class TestTasks(BaseApiTest):
             plant["plt_id"]: plant for plant in self.client.get("/api/plants?q=Mixed Bloom").json()
         }
         self.assertTrue(plants["BL-MIXED"]["seen_growing"])
-        self.assertEqual(plants["BL-MIXED"]["seen_growing_date"], date.today().isoformat())
+        self.assertEqual(plants["BL-MIXED"]["seen_growing_date"], completed_day.isoformat())
         self.assertEqual(plants["BL-MIXED"]["presence_status"], "mixed")
         self.assertEqual(plants["BL-MIXED"]["last_not_seen_year"], str(current_year))
 

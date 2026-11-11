@@ -31,8 +31,8 @@ of splitting that information across spreadsheets, notes, calendars, and photo
 folders.
 
 It is a full-stack FastAPI/PostgreSQL and Vite/TypeScript application with
-schema migrations, backend and frontend test coverage, GitHub Actions, and
-systemd/nginx deployment examples. It is designed for self-hosted instances:
+schema migrations, backend and frontend test coverage, a local release gate,
+and systemd/nginx deployment examples. It is designed for self-hosted instances:
 your data, provider keys, logs, and media uploads stay under your
 control.
 
@@ -53,7 +53,7 @@ control.
 - Built for serious operators: multi-garden memberships, roles, exports,
   calendar subscriptions, notifications, weather context, and optional AI
   are available for more complex garden operations.
-- Inspectable and maintainable: open source code, migrations, CI checks,
+- Inspectable and maintainable: open source code, migrations, local checks,
   security controls, deployment examples, and documented configuration make the
   system practical to operate and adapt.
 
@@ -147,7 +147,7 @@ control.
   limits, invite-token hashing checks, and security telemetry hooks.
 - Production-oriented proxy settings for trusted hosts, CORS, trusted proxy
   CIDRs, internet-exposed mode, Redis rate limiting, and CSP checks.
-- Deployment examples for systemd and nginx, plus CI checks for backend tests,
+- Deployment examples for systemd and nginx, plus local checks for backend tests,
   frontend builds, environment docs, unsafe HTML sinks, invite-token storage,
   and sourcemap leakage.
 
@@ -329,8 +329,8 @@ TypeScript, production bundling, sourcemap leakage, and stale generated asset
 references. If a change adds a new raw HTML sink, it must be reviewed and
 documented in `frontend/security/innerhtml_allowlist.txt`.
 
-GitHub Actions runs backend, frontend, and dependency audit checks on pushes and
-pull requests.
+The managed host runs backend, frontend, browser, and dependency audit checks
+in isolated local release builds. GitHub Actions is disabled for this repository.
 
 ## Production Notes
 

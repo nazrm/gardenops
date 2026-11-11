@@ -48,8 +48,24 @@
           "status_code": 200
         },
         {
-          "actor": "anonymous",
-          "count": 4,
+          "actor": "admin",
+          "count": 2,
+          "garden": null,
+          "method": "POST",
+          "path": "/api/auth/login",
+          "status_code": 200
+        },
+        {
+          "actor": "editor",
+          "count": 1,
+          "garden": null,
+          "method": "POST",
+          "path": "/api/auth/login",
+          "status_code": 200
+        },
+        {
+          "actor": "viewer",
+          "count": 1,
           "garden": null,
           "method": "POST",
           "path": "/api/auth/login",

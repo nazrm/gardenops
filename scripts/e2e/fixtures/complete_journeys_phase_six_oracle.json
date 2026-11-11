@@ -9,26 +9,26 @@
       "profiles": {
         "desktop": {
           "journal_title": "Phase 6 lost acknowledgement observation desktop",
-          "retry_as_new_title": "Conflicting journal observation desktop"
+          "retry_as_new_title": "Recovered issue observation desktop"
         },
         "mobile": {
           "journal_title": "Phase 6 lost acknowledgement observation mobile",
-          "retry_as_new_title": "Conflicting journal observation mobile"
+          "retry_as_new_title": "Recovered issue observation mobile"
         }
       }
     },
     "audit_contract": {
-      "additional_login_count": 3,
+      "additional_login_count": 2,
       "events": [
         { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/passkeys/login/options", "status_code": 200 },
-        { "actor": "anonymous", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
+        { "actor": "admin", "count": 4, "garden": null, "method": "POST", "path": "/api/auth/login", "status_code": 200 },
         { "actor": "admin", "count": 1, "garden": "alpha", "method": "POST", "path": "/api/auth/passkeys/prompt/dismiss", "status_code": 200 },
-        { "actor": "admin", "count": 4, "garden": "alpha", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
+        { "actor": "admin", "count": 8, "garden": "alpha", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
         { "actor": "admin", "count": 4, "garden": "beta", "method": "POST", "path": "/api/media/summaries", "status_code": 200 },
         { "actor": "admin", "count": 4, "garden": "alpha", "method": "POST", "path": "/api/journal", "status_code": 201 },
-        { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/journal", "status_code": 201 },
+        { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/issues", "status_code": 201 },
         { "actor": "admin", "count": 2, "garden": "beta", "method": "POST", "path": "/api/auth/logout", "status_code": 200 },
-        { "actor": "anonymous", "count": 1, "garden": null, "method": "POST", "path": "/api/client-errors", "status_code": 204 }
+        { "actor": "anonymous", "count": 2, "garden": null, "method": "POST", "path": "/api/client-errors", "status_code": 204 }
       ]
     },
     "browser_contract": {
@@ -49,10 +49,20 @@
     },
     "read_side_effects": {
       "exact_counts": {
+        "garden_issues": { "added": 2, "removed": 0 },
+        "garden_journal_entries": { "added": 4, "removed": 0 },
+        "garden_tasks": { "added": 2, "removed": 0 },
+        "notification_events": { "added": 4, "removed": 0 },
+        "offline_create_operations": { "added": 4, "removed": 0 },
         "provider_daily_usage": { "added": 0, "removed": 0 },
         "shademap_cache": { "added": 0, "removed": 0 }
       },
       "exact_identity_counts": {
+        "garden_issues": { "added": 2, "removed": 0, "updated": 0 },
+        "garden_journal_entries": { "added": 4, "removed": 0, "updated": 0 },
+        "garden_tasks": { "added": 2, "removed": 0, "updated": 0 },
+        "notification_events": { "added": 4, "removed": 0, "updated": 0 },
+        "offline_create_operations": { "added": 4, "removed": 0, "updated": 0 },
         "provider_daily_usage": { "added": 0, "removed": 0, "updated": 0 },
         "shademap_cache": { "added": 0, "removed": 0, "updated": 0 }
       }
@@ -62,7 +72,10 @@
         "auth_passkey_challenges",
         "auth_sessions",
         "auth_users",
+        "garden_issues",
         "garden_journal_entries",
+        "garden_tasks",
+        "notification_events",
         "layout_state",
         "offline_create_operations",
         "provider_daily_usage",

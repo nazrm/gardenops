@@ -1,90 +1,45 @@
 # Dependency updates and deployment
 
-The central pinned Renovate job runs at 06:17 and 18:17 Europe/Oslo every day
-and opens real security-fix PRs. Dependabot retains dependency alert coverage;
-its routine version PRs are disabled. Native security PRs remain enabled alongside
-Renovate; check for overlapping PRs before merging. GitHub's live validator
-rejects Dependabot cron intervals below 24 hours, so it cannot own this cadence.
-Existing trusted sources, release-age policies and security release-age exceptions
-continue to apply in CI. Existing GardenOps CI tests each PR.
+GardenOps uses the host's local release gate. GitHub Actions is disabled, and
+the old `gardenops-security-deploy.timer` is disabled because it depends on
+GitHub CI. Do not re-enable that timer. Renovate or Dependabot PRs, if present,
+are separate review inputs; the host's automatic worker only publishes its own
+`maintenance/local-dependencies` branch.
 
-Merge a passing PR to main. The optional host deployment timer checks every
-15 minutes for a merged dependency update. It requires successful **push CI on
-the exact current main SHA**, ancestry from the installed revision, and a diff
-limited to Python/npm manifests and locks plus Dependabot configuration.
-Application, migration or unrelated configuration changes use normal deployment.
-They are reported as requiring that deployment rather than silently bundled.
-When an approved maintenance merge has exactly the same source tree as the
-installed commit, the poller verifies CI, merge authorization and the actual
-running release, then reports current without rebuilding or rewriting receipts.
+At 06:00 Europe/Oslo, `host-app-local-updates.timer` runs the fixed GardenOps
+worker after Lossless. It starts from the exact current live tree, proposes
+compatible Python/npm dependency manifest and lock changes, and rejects other
+source or migration changes. The builder runs trusted dependency policy,
+release-age and advisory checks, the full disposable PostgreSQL suite,
+frontend checks, all ten browser journey phases, and package audits as the
+isolated `app-build` account. The root-owned publisher verifies every sealed
+artifact, takes a host backup, atomically activates the tested release, and
+checks active bytes and public health. Only then does the worker push its exact
+commit and open/update a pull request.
 
-The existing atomic deployer prepares the release, migrates/checks integrity,
-activates it and retains the previous release. This poller rechecks main and
-the current release after preparation and verifies the running process's cwd,
-release receipt and public HTTPS health after activation. It never merges PRs,
-changes source constraints, starts dormant apps, or creates database copies.
+Both `main` protections require a pull request and `Local Release Gate` status.
+The independent gate checks the sealed receipt, live release, public health,
+PR head/base, and its own newly posted status before merging. A changed branch,
+failed check, stale evidence, or uncertain activation stops the worker and
+raises a maintenance alert. An interrupted run resumes its root-only pending
+record rather than publishing a second release. An expired receipt for an
+already deployed release requires supervised inspection.
 
-## Install on the actual production host
+Application code, policy, release machinery, and new database migrations are
+outside the unattended dependency path. Release those from a reviewed source
+change with the appropriate supervised build, migration, integrity, backup,
+and rollback checks. The owner authorized deployment before the maintenance PR
+for this specific update workflow; ordinary source releases still use `main`.
+PR #253 is a one-time supervised catch-up: its reviewed commit must directly
+descend from live `594c92446067ea7ddaf3522e11e636c2dfcc2967`, pass full
+sealed checks without migration changes, and receive local status before merge.
 
-First deploy current main through the normal release process. Use the already
-installed atomic deployer and a dedicated clean control repository that can
-fetch origin/main. The poller and atomic deployer run as root: use a dedicated
-root-owned bare clone, not a developer-owned working checkout. For example,
-create `/var/lib/gardenops-security-deploy` with mode 0700 and run these as root:
+## Checking an alert
 
-```sh
-git clone --bare https://github.com/nazrm/gardenops.git /var/lib/gardenops-security-deploy/repository.git
-git -C /var/lib/gardenops-security-deploy/repository.git config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main'
-git -C /var/lib/gardenops-security-deploy/repository.git fetch origin main
-```
-
-The explicit fetch mapping maintains `origin/main` in the bare repository.
-A bare clone avoids checkout hooks and leaves the developer's files alone. Do not disable Git's
-ownership checks globally. Confirm its host-specific settings match the example JSON.
-The service's `GARDENOPS_CONTROL_REPO` must match the JSON `control_repo`.
-On a host with the daily maintenance worker, set `pause_for_service` to
-`host-app-updates.service`; otherwise leave it null. Active maintenance defers
-the poller without fetching, deploying or raising a failure. Existing failed or
-uncertain activation receipts still require inspection even while deferred.
-Copy the Python helper to `/usr/local/lib/gardenops-security-deploy.py` as
-root:root 0755, and the three unit files into `/etc/systemd/system` root:root
-0644. Copy/adapt the example to `/etc/gardenops-security-deploy.json`, root:root
-0600, including the real HTTPS health URL. Do not install with the placeholder.
-No new GitHub deployment secret is needed: metadata is read from this public
-repository; Git fetch uses the server's existing repository access.
-
-Install the matching updated `gardenops-atomic-deploy` too: the poller requires
-its `binding` and `activate-if-current REVISION PREVIOUS` commands. Binding must
-match the configured repository, release root and service. The expected previous
-revision is checked while holding the canonical deployment lock, so a concurrent
-manual release cannot be overwritten. Manifest script/build-source changes are
-normal releases, not dependency-only updates. Public health must be HTTPS,
-non-redirecting JSON with `status: ok`.
-
-Run the helper without `--apply` first. Verify its selected commit and CI run.
-Then run `systemctl daemon-reload` and
-`systemctl enable --now gardenops-security-deploy.timer`. Verify the unit schedule
-and run the service once; a no-op current-release result validates connectivity
-and running health, **not** an actual update deployment. After the next merged
-fix, require `last.json` phase `deployed`, the target SHA and healthy live app.
-
-The service is serialized; systemd kills its whole process group on timeout.
-GitHub outages, rate limits, CI failures and revision drift fail visibly in the
-service journal. `OnFailure` emits an error to the host's existing syslog lane.
-Failed and timed-out commands include bounded captured output in the service
-journal so the atomic deployer's diagnostic is retained for inspection.
-External alert delivery must be checked on that host; syslog alone is not a
-promise of a phone/push notification. No automatic blind activation retry:
-`activating` or `failed` receipts block further attempts until inspected. Check
-the actual selected/running release and atomic deploy logs, recover using the
-existing deployer if needed, then archive the inspected receipt to clear it.
-Never clear it just to make the timer green.
-
-## Focused tests
-
-`python3 -B -m unittest discover -s tests -p test_security_autodeploy.py -v`
-
-These use tiny temporary fixtures and mock the deployer/GitHub API. They prove
-failed CI, mixed code changes, migrations, head movement, failed health,
-uncertain activation and stale crash receipts cannot report successful deploys.
-They do not prove the remote server is configured or reachable.
+Inspect `systemctl status host-app-local-updates.service` and the root-only
+`/var/lib/host-maintenance/local-gardenops.json` report. Use local journal
+entries for the failing phase; do not post raw logs, credentials, or database
+contents in GitHub issues. Confirm the current release SHA and public health
+before retrying. Do not clear a pending receipt or force a merge merely to make
+the timer green. The host maintenance source and release contract live in the
+private `nazrm/lossless.science` repository under `ops/host-maintenance/`.
