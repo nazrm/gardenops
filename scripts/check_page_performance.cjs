@@ -3139,9 +3139,24 @@ async function selectLivePerformanceGarden(page, gardenName, timeoutMs) {
   return Number(gardenId);
 }
 
+async function installCompleteJourneyOnlineBaseline(context, options) {
+  // systemd PrivateNetwork can report offline despite a working loopback server.
+  // This applies only to the isolated complete-journey performance probe.
+  if (process.env.GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD !== "1" || options.stubApi) return;
+  const host = new URL(options.url).hostname;
+  if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]") return;
+  await context.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "onLine", {
+      configurable: true,
+      get: () => true,
+    });
+  });
+}
+
 async function createLiveSessionStorageState(browser, options, credentials, gardenName = "") {
   if (!credentials) return null;
   const context = await browser.newContext(createBrowserContextOptions(options));
+  await installCompleteJourneyOnlineBaseline(context, options);
   const networkGuard = await installLiveNetworkGuard(context, options);
   try {
     const page = await context.newPage();
@@ -3195,6 +3210,7 @@ async function runMeasuredScenario(browser, options, runIndex, liveSession = nul
     } : {}),
     ...(liveSession ? { storageState: liveSession.storageState } : {}),
   });
+  await installCompleteJourneyOnlineBaseline(context, options);
   const networkGuard = options.stubApi ? null : await installLiveNetworkGuard(context, options);
   try {
     if (options.stubApi) {

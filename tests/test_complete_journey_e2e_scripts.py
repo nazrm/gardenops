@@ -947,9 +947,93 @@ if (present.accounting.app_settings.expected_added !== 1
   || present.accounting.app_settings.expected_removed !== 1
   || present.accounting.app_settings.expected_identity_updated !== 1) process.exit(5);
 if (present.allowedTables.size !== 24) process.exit(6);
+const expired = phaseThreeExactMutationContract(
+  { harvest_rollups: [] }, fixture, oracle,
+  { auth_passkey_challenges: ['a'.repeat(64)], offline_create_operations: ['b'.repeat(64)] },
+);
+if (expired.accounting.auth_passkey_challenges.expected_removed !== 1
+  || expired.accounting.auth_passkey_challenges.expected_identity_removed !== 1
+  || expired.accounting.offline_create_operations.expected_removed !== 1
+  || expired.accounting.offline_create_operations.expected_identity_removed !== 1
+  || expired.accounting.auth_passkey_challenges.expected_removed_identity_digests[0]
+    !== 'a'.repeat(64)
+  || expired.accounting.offline_create_operations.expected_removed_identity_digests[0]
+    !== 'b'.repeat(64)) process.exit(7);
 """
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_phase_three_expiry_cleanup_requires_matching_expired_row_identities() -> None:
+    script = """
+const crypto = require('node:crypto');
+const {
+  assertExpiredPasskeyChallengeCleanup, assertPhaseThreeExpiryCleanup,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const hash = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const challengeId = hash({ id: 12 });
+const operations = Array.from({ length: 4 }, (_, index) => ({
+  endpoint: '/api/gardens/tasks', garden_id: 1,
+  operation_id: `00000000-0000-4000-8000-00000000000${index}`,
+}));
+const operationIds = operations.map((row) => hash(row));
+const projection = (ids) => ids.map((id) => ({
+  identity_digest: id, row_digest: 'f'.repeat(64),
+}));
+const before = {
+  phase_five_state: { challenge_projection: [{
+    domain_identity_digest: challengeId, expires_at_ms: 100,
+    identity_digest: 'a'.repeat(64),
+  }] },
+  phase_two_state: { offline_operations: operations },
+  phase_three_state: { prior_offline_operations: operations.map((row) => ({
+    ...row, created_at_ms: 1, expires_at_ms: 100,
+  })) },
+  domain_tables: {
+    auth_passkey_challenges: { row_projections: projection([challengeId]) },
+    offline_create_operations: { row_projections: projection(operationIds) },
+  },
+};
+const after = {
+  phase_five_state: { challenge_projection: [], snapshot_at_ms: 200 },
+  phase_three_state: { prior_offline_operations: [] },
+  domain_tables: {
+    auth_passkey_challenges: { row_projections: [] },
+    offline_create_operations: { row_projections: [] },
+  },
+};
+const cleanup = assertPhaseThreeExpiryCleanup(before, after, true);
+if (cleanup.auth_passkey_challenges[0] !== challengeId
+  || cleanup.offline_create_operations.length !== 4) process.exit(2);
+if (assertExpiredPasskeyChallengeCleanup(before, after, 'Phase 4')[0] !== challengeId)
+  process.exit(7);
+before.phase_three_state.prior_offline_operations[0].expires_at_ms = 201;
+try { assertPhaseThreeExpiryCleanup(before, after, true); process.exit(3); }
+catch (error) {
+  if (!String(error.message).includes('exactly the expired Phase 2')) process.exit(4);
+}
+before.phase_three_state.prior_offline_operations[0].expires_at_ms = 100;
+before.domain_tables.auth_passkey_challenges.row_projections[0].identity_digest = 'b'.repeat(64);
+try { assertPhaseThreeExpiryCleanup(before, after, true); process.exit(5); }
+catch (error) {
+  if (!String(error.message).includes('different database row')) process.exit(6);
+}
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_three_prior_offline_query_includes_uuid_task_operations() -> None:
+    source = SEEDER.read_text(encoding="utf-8")
+    phase_three = source.split("def _phase_three_runtime_state(", 1)[1].split(
+        "def _phase_four_runtime_state(", 1
+    )[0]
+    prior_query = phase_three.split("prior_operation_rows = conn.execute(", 1)[1].split(
+        ").fetchall()", 1
+    )[0]
+    assert "operation_id LIKE 'phase2-%%'" in prior_query
+    assert "OR target_id = ANY(%s)" in prior_query
+    assert "(list(PHASE_TWO_TASKS.values()),)" in prior_query
 
 
 def test_phase_three_boundary_contract_rejects_profile_state_drift() -> None:
@@ -1020,6 +1104,7 @@ def test_phase_four_fixture_journey_and_database_contract_are_declared() -> None
         "inventory_items",
         "inventory_transactions",
         "procurement_items",
+        "user_calendar_preferences",
     ]
     for journey_id in ("P4", "P6", "I1", "L1", "L2", "R2", "R3"):
         assert f'"{journey_id}"' in checker_source
@@ -1270,11 +1355,11 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     assert oracle["phase_six"]["fixture"]["profiles"] == {
         "desktop": {
             "journal_title": "Phase 6 lost acknowledgement observation desktop",
-            "retry_as_new_title": "Conflicting journal observation desktop",
+            "retry_as_new_title": "Recovered issue observation desktop",
         },
         "mobile": {
             "journal_title": "Phase 6 lost acknowledgement observation mobile",
-            "retry_as_new_title": "Conflicting journal observation mobile",
+            "retry_as_new_title": "Recovered issue observation mobile",
         },
     }
     assert oracle["phase_six"]["browser_contract"]["failed_families"] == [
@@ -1286,13 +1371,13 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     ]
     assert oracle["phase_six"]["browser_contract"]["recovery_collapsed_by_default"] is True
     assert oracle["phase_six"]["browser_contract"]["retry_as_new_replacement_count"] == 1
-    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 3
-    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 26
+    assert oracle["phase_six"]["audit_contract"]["additional_login_count"] == 2
+    assert sum(event["count"] for event in oracle["phase_six"]["audit_contract"]["events"]) == 31
     assert any(
         event
         == {
             "actor": "anonymous",
-            "count": 1,
+            "count": 2,
             "garden": None,
             "method": "POST",
             "path": "/api/client-errors",
@@ -1302,10 +1387,20 @@ def test_phase_six_offline_browser_journey_and_harness_are_registered() -> None:
     )
     assert oracle["phase_six"]["read_side_effects"] == {
         "exact_counts": {
+            "garden_issues": {"added": 2, "removed": 0},
+            "garden_journal_entries": {"added": 4, "removed": 0},
+            "garden_tasks": {"added": 2, "removed": 0},
+            "notification_events": {"added": 4, "removed": 0},
+            "offline_create_operations": {"added": 4, "removed": 0},
             "provider_daily_usage": {"added": 0, "removed": 0},
             "shademap_cache": {"added": 0, "removed": 0},
         },
         "exact_identity_counts": {
+            "garden_issues": {"added": 2, "removed": 0, "updated": 0},
+            "garden_journal_entries": {"added": 4, "removed": 0, "updated": 0},
+            "garden_tasks": {"added": 2, "removed": 0, "updated": 0},
+            "notification_events": {"added": 4, "removed": 0, "updated": 0},
+            "offline_create_operations": {"added": 4, "removed": 0, "updated": 0},
             "provider_daily_usage": {"added": 0, "removed": 0, "updated": 0},
             "shademap_cache": {"added": 0, "removed": 0, "updated": 0},
         },
@@ -1457,6 +1552,13 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
     assert "const phaseEightAllowedTables = new Set(PHASE_EIGHT_ALLOWED_TABLES);" in checker_source
     assert "function assertPhaseEightWholeTableMutationAccounting" in checker_source
     assert "phase_eight_grouped_fertilize_completion" in checker_source
+    assert "initial?.phase_eight_state?.completion_validation_task" in checker_source
+    assert "fixture?.phase_eight?.completion_validation_task?.public_id" in checker_source
+    assert "options.fixture.phase_eight?.completion_validation_task?.public_id" in journey_source
+    assert "options.fixture.phase_two.task_ids.fertilize_grouped" not in journey_source
+    assert journey_source.index('["admin", "tablet"]') < journey_source.index(
+        '["admin", "desktop"]'
+    )
     for marker in (
         "assertAxeState",
         "chromiumAXTree",
@@ -1488,9 +1590,15 @@ def test_phase_eight_accessibility_responsive_journey_and_harness_are_registered
         assert forbidden not in journey_source
 
 
-def test_phase_nine_runner_selects_the_test_performance_app_only_through_phase_nine() -> None:
+def test_phase_nine_runner_selects_the_test_performance_app_through_seasonal_wrapper() -> None:
     runner_source = RUNNER.read_text(encoding="utf-8")
-    phase_app = "scripts.e2e.performanceFastapiApp:app"
+    seasonal_source = (ROOT / "scripts" / "e2e" / "seasonalWorkflowTestApp.py").read_text(
+        encoding="utf-8"
+    )
+    performance_source = (ROOT / "scripts" / "e2e" / "performanceFastapiApp.py").read_text(
+        encoding="utf-8"
+    )
+    phase_app = "scripts.e2e.seasonalWorkflowTestApp:app"
     default_match = re.search(
         r"(?m)^(?P<variable>[A-Z][A-Z0-9_]*)=(?:\"|')?gardenops\.main:app(?:\"|')?\s*$",
         runner_source,
@@ -1498,23 +1606,44 @@ def test_phase_nine_runner_selects_the_test_performance_app_only_through_phase_n
 
     assert "MAX_IMPLEMENTED_PHASE=9" in runner_source
     assert default_match, "The runner must default to the production ASGI app"
-    selection = re.search(
-        r"if\s+\(\(\s*THROUGH_PHASE\s*(?:==|>=)\s*9\s*\)\)\s*;?\s*then"
+    seasonal_selection = re.search(
+        r"if\s+\(\(\s*THROUGH_PHASE\s*>=\s*4\s*\)\)\s*;?\s*then"
         r"(?P<body>.*?)\n\s*fi\b",
         runner_source,
         re.DOTALL,
     )
-    assert selection, "Phase 9 backend selection must be based on THROUGH_PHASE"
+    assert seasonal_selection, "The seasonal backend must start at phase 4"
     variable = default_match.group("variable")
     assert re.search(
         rf"(?m)^\s*{re.escape(variable)}=(?:\"|')?{re.escape(phase_app)}(?:\"|')?\s*$",
-        selection.group("body"),
+        seasonal_selection.group("body"),
     )
+    performance_selection = re.search(
+        r"if\s+\(\(\s*THROUGH_PHASE\s*>=\s*9\s*\)\)\s*;?\s*then"
+        r"(?P<body>.*?)\n\s*fi\b",
+        runner_source,
+        re.DOTALL,
+    )
+    assert performance_selection, "Phase 9 query evidence must be selected by THROUGH_PHASE"
     assert (
         "export GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH="
         '"$ARTIFACT_DIR/phase-nine-query-evidence.jsonl"'
-    ) in selection.group("body")
+    ) in performance_selection.group("body")
     assert runner_source.count(phase_app) == 1
+    assert "scripts.e2e.performanceFastapiApp:app" not in runner_source
+    assert (
+        'if int(os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_THROUGH_PHASE", "0")) >= 9:'
+        in seasonal_source
+    )
+    assert "from scripts.e2e.performanceFastapiApp import app as app" in seasonal_source
+    assert "else:\n    from gardenops.main import app as app" in seasonal_source
+    assert 'os.environ.get("APP_ENV") != "test"' in seasonal_source
+    assert 'os.environ.get("GARDENOPS_COMPLETE_JOURNEYS_E2E_CHILD") != "1"' in seasonal_source
+    assert (
+        'os.environ.get("DATABASE_URL") != os.environ.get("GARDENOPS_DISPOSABLE_POSTGRES_URL")'
+        in seasonal_source
+    )
+    assert "require_disposable_e2e_environment(environment)" in performance_source
     uvicorn_command = runner_source[runner_source.index('bin/uvicorn"') :]
     assert re.search(rf"\$\{{?{re.escape(variable)}\}}?", uvicorn_command)
 
@@ -1701,7 +1830,19 @@ const evidence = assertPhaseSixAuditEvents(
   fixture,
   oracle,
 );
-if (!evidence.audit_events_exact || evidence.audit_event_count !== 26) process.exit(3);
+if (!evidence.audit_events_exact || evidence.audit_event_count !== records.length) process.exit(3);
+const cumulativeRecords = records.filter((record) => (
+  record.path !== '/api/auth/passkeys/prompt/dismiss'
+));
+const cumulativeEvidence = assertPhaseSixAuditEvents(
+  { records: [prior] },
+  { records: [prior, ...cumulativeRecords] },
+  fixture,
+  oracle,
+  true,
+);
+if (!cumulativeEvidence.audit_events_exact
+    || cumulativeEvidence.audit_event_count !== cumulativeRecords.length) process.exit(6);
 const tampered = structuredClone(records);
 tampered.at(-1).garden_id = 999;
 try {
@@ -1711,6 +1852,58 @@ try {
     fixture,
     oracle,
   );
+  process.exit(4);
+} catch (error) {
+  if (!String(error.message).includes('audit delta')) process.exit(5);
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_phase_seven_audit_contract_preserves_fresh_and_cumulative_dismissals() -> None:
+    script = r"""
+const {
+  assertPhaseSevenAuditEvents,
+  phaseSevenOracle,
+} = require('./scripts/check_complete_journeys_e2e.cjs');
+const oracle = phaseSevenOracle();
+const fixture = {
+  gardens: { alpha: { id: 11 } },
+  roles: { admin: 'admin', editor: 'editor', viewer: 'viewer' },
+};
+const actors = {
+  admin: ['session', 'admin', 'admin'],
+  editor: ['session', 'editor', 'editor'],
+  viewer: ['session', 'viewer', 'viewer'],
+  anonymous: ['none', 'anonymous', 'anonymous'],
+};
+let id = 1;
+const records = oracle.phase_seven.audit_contract.events.flatMap((event) => (
+  Array.from({ length: event.count }, () => ({
+    id: id++,
+    actor_auth_type: actors[event.actor][0],
+    actor_role: actors[event.actor][1],
+    actor_username: actors[event.actor][2],
+    garden_id: event.garden === null ? null : fixture.gardens.alpha.id,
+    method: event.method,
+    path: event.path,
+    status_code: event.status_code,
+  }))
+));
+const fresh = assertPhaseSevenAuditEvents({ records: [] }, { records }, fixture, oracle);
+if (fresh.audit_event_count !== records.length) process.exit(2);
+const cumulativeRecords = records.filter((record) => (
+  record.path !== '/api/auth/passkeys/prompt/dismiss'
+));
+const cumulative = assertPhaseSevenAuditEvents(
+  { records: [] }, { records: cumulativeRecords }, fixture, oracle, true,
+);
+if (cumulative.audit_event_count !== cumulativeRecords.length) process.exit(3);
+try {
+  assertPhaseSevenAuditEvents({ records: [] }, { records: cumulativeRecords }, fixture, oracle);
   process.exit(4);
 } catch (error) {
   if (!String(error.message).includes('audit delta')) process.exit(5);
@@ -2179,6 +2372,24 @@ if (cumulativeEvidence.retained_count !== 1
     || cumulativeEvidence.cleaned_before_boundary_count !== 1) {
   process.exit(7);
 }
+const expired = { ...row('b', 90), domain_identity_digest: 'f'.repeat(64) };
+const phaseEightEvidence = assertPhaseOneChallengeProjection(
+  state([expired]), state([row('a', 200)], 120), profiles,
+  'Phase 8', { allowExpiredRemovals: true },
+);
+if (phaseEightEvidence.retained_count !== 1
+    || phaseEightEvidence.expired_removed_identity_digests[0] !== 'f'.repeat(64)) {
+  process.exit(8);
+}
+try {
+  assertPhaseOneChallengeProjection(
+    state([{ ...expired, expires_at_ms: 130 }]), state([row('a', 200)], 120), profiles,
+    'Phase 8', { allowExpiredRemovals: true },
+  );
+  process.exit(9);
+} catch (error) {
+  if (!String(error.message).includes('diverged from browser challenge starts')) process.exit(10);
+}
 try {
   assertPhaseOneChallengeProjection(
     state([]), state([row('a', 200), row('c', 200)]), profiles,
@@ -2206,8 +2417,8 @@ def test_phase_eight_allows_only_profile_bound_passkey_challenge_starts() -> Non
     checker_source = CHECKER.read_text(encoding="utf-8")
 
     assert (
-        "function assertPhaseEightDatabaseState(initial, final, profiles, fixture)"
-        in checker_source
+        "function assertPhaseEightDatabaseState("
+        "initial, final, profiles, fixture, phaseTwoRan = false)" in checker_source
     )
     assert "function assertPhaseEightAuthState(initial, final, profiles)" in checker_source
     assert "function assertPhaseEightAuditState(initial, final, profiles)" in checker_source
@@ -2219,6 +2430,54 @@ def test_phase_eight_allows_only_profile_bound_passkey_challenge_starts() -> Non
     assert '"shademap_cache"' in checker_source
     assert "audit_events_bound_to_requests: true" in checker_source
     assert "grouped_task_completion_exact: true" in checker_source
+
+
+def test_phase_eight_clears_only_its_three_task_notifications() -> None:
+    script = r"""
+const { assertPhaseEightNotificationClear } = require('./scripts/check_complete_journeys_e2e.cjs');
+const fixture = {
+  gardens: { alpha: { id: 1 } },
+  roles: { admin: 'admin', editor: 'editor', viewer: 'viewer' },
+  phase_eight: { completion_validation_task: { public_id: 'tsk_p8' } },
+};
+const before = ['admin', 'editor', 'viewer'].map((recipient, index) => ({
+  public_id: `note_${index}`,
+  recipient_username: recipient,
+  garden_id: 1,
+  notification_type: 'task_due',
+  target_type: 'task',
+  target_id: 'tsk_p8',
+  dismissed: 0,
+  cleared_at_ms: null,
+  clear_reason: null,
+  stable_digest: String(index + 1).repeat(64),
+}));
+const after = before.map((row) => ({
+  ...row, cleared_at_ms: 100, clear_reason: 'completed',
+}));
+const wrap = (rows) => ({ phase_eight_state: { task_notifications: rows } });
+const evidence = assertPhaseEightNotificationClear(wrap(before), wrap(after), fixture, true);
+if (evidence.cleared_count !== 3 || evidence.updated_identity_digests.length !== 3) {
+  process.exit(2);
+}
+const fresh = assertPhaseEightNotificationClear(wrap([]), wrap([]), fixture, false);
+if (fresh.cleared_count !== 0) process.exit(3);
+for (const tampered of [
+  [{ ...after[0], stable_digest: 'f'.repeat(64) }, ...after.slice(1)],
+  [{ ...after[0], clear_reason: 'dismissed' }, ...after.slice(1)],
+]) {
+  try {
+    assertPhaseEightNotificationClear(wrap(before), wrap(tampered), fixture, true);
+    process.exit(4);
+  } catch (error) {
+    if (!String(error.message).includes('beyond the expected completion clear')) process.exit(5);
+  }
+}
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, check=False, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_phase_two_accounts_for_deterministic_read_side_effects() -> None:
@@ -3129,6 +3388,7 @@ const graph = (name, slug, owner, id) => ({
   plants: [],
   plots: [{
     archived_at_ms: null, color: null, container_type: null, display_name: null,
+    container_position_x: null, container_position_y: null,
     environment: 'indoor', garden_id: id, grid_col: null, grid_row: null, notes: '',
     owner_username: owner, parent_object_public_id: null, plot_id: `INDOOR-${id}`,
     plot_kind: 'indoor', plot_number: 0, sub_zone: '', zone_code: 'I',
@@ -3971,6 +4231,36 @@ def test_cumulative_assertions_preserve_private_replay_state_before_validation()
         assert snapshot in main
 
 
+def test_later_phase_exact_checks_stop_at_their_own_database_boundary() -> None:
+    source = CHECKER.read_text(encoding="utf-8")
+    for name, number in (("Four", 4), ("Five", 5), ("Six", 6), ("Seven", 7)):
+        variable = f"phase{name}Database"
+        baseline = (
+            f"phase{name}AuditBaseline"
+            if name in ("Four", "Five")
+            else f"phase{name}DatabaseBaseline.audit_state"
+        )
+        escaped_baseline = re.escape(baseline)
+        assert (
+            f'{variable} = await settledDatabaseSnapshot("Phase {number} database boundary")'
+            in source
+        )
+        assert re.search(
+            rf"assertPhase{name}AuditEvents\(\s*{escaped_baseline},"
+            rf"\s*{variable}\.audit_state,",
+            source,
+            re.DOTALL,
+        )
+    for name in ("Four", "Five", "Seven"):
+        state = f"phase_{name.lower()}_state"
+        assert re.search(
+            rf"assertPhase{name}DatabaseState\(\s*phase{name}DatabaseBaseline\.{state},"
+            rf"\s*phase{name}Database\.{state},",
+            source,
+            re.DOTALL,
+        )
+
+
 def test_phase_two_audit_correlation_requires_exact_actor_auth_garden_and_request_pairing() -> None:
     script = """
 const { assertPhaseTwoAuditEvents } = require('./scripts/check_complete_journeys_e2e.cjs');
@@ -4635,21 +4925,25 @@ def test_phase_two_viewer_denial_consumes_response_before_reload() -> None:
     )
 
 
-def test_phase_two_completion_journals_retain_task_plot_context() -> None:
+def test_phase_two_completion_journals_reflect_selected_plot_scope() -> None:
     source = CHECKER.read_text(encoding="utf-8")
     journal_expectations = source.split("const journalExpectations = {", 1)[1].split(
         "assert(\n    state.journal.length", 1
     )[0]
 
-    for task_key in ("bloom_desktop", "bloom_mobile"):
+    for task_key, expected_plot_ids in (
+        ("bloom_desktop", "[phase.plot_ids.alpha]"),
+        ("bloom_mobile", "[]"),
+    ):
         task_expectation = journal_expectations.split(f"[phase.task_ids.{task_key}]: {{", 1)[
             1
         ].split("    },", 1)[0]
-        assert "plot_ids: [phase.plot_ids.alpha]," in task_expectation
+        assert f"plot_ids: {expected_plot_ids}," in task_expectation
 
     metadata_expectation = source.split("exact(entry.metadata, {", 1)[1].split(
         "}, `Phase 2 completion journal metadata", 1
     )[0]
+    assert 'observation_scope: "explicit",' in metadata_expectation
     assert "selected_plot_ids: expected.plot_ids," in metadata_expectation
 
 
@@ -4741,14 +5035,16 @@ def test_phase_two_mobile_quick_action_keeps_manual_date_completion_actionable()
     assert ".fill(fixture.phase_two.manual_date);" not in quick_actions
 
 
-def test_phase_two_snooze_correction_opens_mobile_week_overflow() -> None:
+def test_phase_two_snooze_correction_opens_mobile_day_overflow() -> None:
     source = (ROOT / "scripts/e2e/journeys/dailyAttentionWork.cjs").read_text(encoding="utf-8")
     correction = source.split("async function exerciseImmediateSnoozeCorrection", 1)[1].split(
         "async function snoozePruneWithManualDate", 1
     )[0]
 
-    assert 'page.locator(".fc-daygrid-more-link:visible").last()' in correction
-    assert 'page.locator(".fc-popover .fc-event:visible")' in correction
+    assert 'page.locator(".garden-calendar-day-cell details").filter({' in correction
+    assert 'has: page.locator(".calendar-event").filter({ hasText: task.title })' in correction
+    assert 'overflow.locator("summary").click()' in correction
+    assert 'overflow.locator(".calendar-event:visible")' in correction
 
 
 def test_phase_two_manual_prune_snooze_confirms_window_override() -> None:
@@ -4973,7 +5269,7 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     assert "maintenanceCreated.notifications.created.length" not in source
     assert "PHASE_TWO_MAINTENANCE_EXPECTATIONS" in seed_source
     assert "complete_journeys_phase_two_oracle.json" in seed_source
-    assert oracle["phase_two"]["maintenance"]["summary"]["notifications_created"] == 51
+    assert oracle["phase_two"]["maintenance"]["summary"]["notifications_created"] == 54
     assert oracle["phase_two"]["maintenance"]["summary"]["media_cleanup_attempted"] == 0
     assert oracle["phase_two"]["maintenance"]["summary"]["media_cleanup_failed"] == 0
     assert oracle["phase_two"]["maintenance"]["logical_rows"]["weekly_water"]["due_on"] == [
@@ -4986,9 +5282,9 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     assert weather_tasks["heat_protect"]["severity"] == "high"
     assert "severity: specification.severity" in source
     assert oracle["phase_two"]["maintenance"]["created"]["notifications"]["by_role"] == {
-        "admin": 17,
-        "editor": 17,
-        "viewer": 17,
+        "admin": 18,
+        "editor": 18,
+        "viewer": 18,
     }
     assert oracle["phase_two"]["maintenance"]["mutated_existing"] == {
         "notifications": 0,
@@ -5000,6 +5296,28 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
         "total": 3,
     }
     exact_counts = oracle["phase_two"]["whole_table_mutation_accounting"]["exact_counts"]
+    # The mobile not-seen bloom journal has no observed plot. The other four
+    # Phase 2 journals each link one plot; Phase 1 adds one more in cumulative runs.
+    assert exact_counts["phase_two_only"]["garden_journal_entry_plots"] == {
+        "added": 4,
+        "removed": 0,
+    }
+    assert exact_counts["cumulative_through_phase_two"]["garden_journal_entry_plots"] == {
+        "added": 5,
+        "removed": 0,
+    }
+    # Maintenance fans out one due notice per role for the later Phase 8 task.
+    for scope in ("phase_two_only", "cumulative_through_phase_two"):
+        assert exact_counts[scope]["notification_events"] == {"added": 64, "removed": 2}
+    # Phase 1 imported five plots and replaced one existing plot row.
+    assert exact_counts["cumulative_through_phase_two"]["plot_ownership"] == {
+        "added": 5,
+        "removed": 0,
+    }
+    assert exact_counts["cumulative_through_phase_two"]["plots"] == {
+        "added": 6,
+        "removed": 1,
+    }
     assert exact_counts["phase_two_only"]["garden_tasks"] == {
         "added": 76,
         "removed": 14,
@@ -5027,15 +5345,36 @@ def test_phase_two_maintenance_summary_is_derived_from_tracked_independent_oracl
     exact_identity_counts = oracle["phase_two"]["whole_table_mutation_accounting"][
         "exact_identity_counts"
     ]
+    assert exact_identity_counts["phase_two_only"]["garden_journal_entry_plots"] == {
+        "added": 4,
+        "removed": 0,
+        "updated": 0,
+    }
+    assert exact_identity_counts["cumulative_through_phase_two"]["garden_journal_entry_plots"] == {
+        "added": 5,
+        "removed": 0,
+        "updated": 0,
+    }
+    for scope in ("phase_two_only", "cumulative_through_phase_two"):
+        assert exact_identity_counts[scope]["notification_events"] == {
+            "added": 62,
+            "removed": 0,
+            "updated": 2,
+        }
+    assert exact_identity_counts["cumulative_through_phase_two"]["plot_ownership"] == {
+        "added": 5,
+        "removed": 0,
+        "updated": 0,
+    }
+    assert exact_identity_counts["cumulative_through_phase_two"]["plots"] == {
+        "added": 5,
+        "removed": 0,
+        "updated": 1,
+    }
     assert exact_identity_counts["phase_two_only"]["garden_tasks"] == {
         "added": 62,
         "removed": 0,
         "updated": 14,
-    }
-    assert exact_identity_counts["phase_two_only"]["notification_events"] == {
-        "added": 59,
-        "removed": 0,
-        "updated": 2,
     }
     assert exact_identity_counts["cumulative_through_phase_two"]["weather_cache"] == {
         "added": 1,
@@ -5413,9 +5752,12 @@ const {
 } = require('./scripts/e2e/completeJourneyBrowser.cjs');
 let starts = 0;
 const context = {
+  addInitScript: async () => {},
   close: async () => {},
   on: () => {},
+  pages: () => [],
   route: async () => {},
+  setOffline: async () => {},
   tracing: { start: async () => { starts += 1; }, stop: async () => {} },
 };
 const browser = { newContext: async () => context };
@@ -5562,7 +5904,7 @@ const profile = {
 };
 const records = [
   {
-    actor_auth_type: 'none', actor_role: 'anonymous', actor_username: 'anonymous',
+    actor_auth_type: 'session', actor_role: 'admin', actor_username: 'admin-user',
     garden_id: null, id: 1, method: 'POST', occurred_at_ms: 1783857600001,
     path: '/api/auth/login', request_id: 'admin-login-request-1', status_code: 200,
   },

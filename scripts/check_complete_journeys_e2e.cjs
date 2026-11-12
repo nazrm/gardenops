@@ -142,6 +142,7 @@ const PHASE_EIGHT_ALLOWED_TABLES = [
   "garden_journal_entry_plants",
   "garden_journal_entry_plots",
   "garden_tasks",
+  "notification_events",
   "provider_daily_usage",
   "shademap_cache",
 ];
@@ -464,9 +465,9 @@ function assertPhaseSevenProfileEvidence(profiles, oracle = phaseSevenOracle()) 
 
 function assertPhaseEightProfileEvidence(profiles) {
   const expected = [
+    "admin:tablet",
     "admin:desktop",
     "admin:mobile",
-    "admin:tablet",
     "admin:desktop-reduced-motion",
     "admin:mobile-reduced-motion",
     "admin:desktop-reflow-200",
@@ -606,7 +607,9 @@ function assertPhaseEightAuthState(initial, final, profiles) {
     && canonicalJson(sessionDelta.added.map((row) => row.category).sort())
       === canonicalJson(expectedCategories),
   "Phase 8 sessions diverged from successful browser logins");
-  const challenge = assertPhaseOneChallengeProjection(before, after, profiles, "Phase 8");
+  const challenge = assertPhaseOneChallengeProjection(
+    before, after, profiles, "Phase 8", { allowExpiredRemovals: true },
+  );
   assert(challenge.retained_count === challenge.browser_challenge_start_count,
     "Phase 8 passkey challenges were not retained exactly for browser starts");
   return {
@@ -617,19 +620,18 @@ function assertPhaseEightAuthState(initial, final, profiles) {
 }
 
 function assertPhaseEightTaskCompletion(initial, final, fixture) {
-  const taskId = fixture?.phase_two?.task_ids?.fertilize_grouped;
+  const taskId = fixture?.phase_eight?.completion_validation_task?.public_id;
   assert(typeof taskId === "string" && taskId, "Phase 8 grouped task fixture is missing");
-  const beforeTasks = new Map((initial?.phase_two_state?.tasks || []).map((task) => [task.public_id, task]));
-  const afterTasks = new Map((final?.phase_two_state?.tasks || []).map((task) => [task.public_id, task]));
-  assert(beforeTasks.size === afterTasks.size && beforeTasks.has(taskId) && afterTasks.has(taskId),
+  const beforeTask = initial?.phase_eight_state?.completion_validation_task;
+  const afterTask = final?.phase_eight_state?.completion_validation_task;
+  assert(beforeTask?.public_id === taskId && afterTask?.public_id === taskId,
     "Phase 8 task projection is missing the grouped fixture");
-  const changedTaskIds = [...afterTasks.keys()].filter((id) => (
-    canonicalJson(beforeTasks.get(id)) !== canonicalJson(afterTasks.get(id))
-  ));
-  assert(canonicalJson(changedTaskIds) === canonicalJson([taskId]),
-    "Phase 8 changed an unexpected task");
-  const beforeTask = beforeTasks.get(taskId);
-  const afterTask = afterTasks.get(taskId);
+  assert(beforeTask.status === "pending"
+    && beforeTask.completed_at_ms === null
+    && beforeTask.completed_by_username === null
+    && beforeTask.plant_ids.length === 2
+    && beforeTask.plot_ids.length === 1,
+  "Phase 8 grouped completion did not start with two plants in one plot");
   assert(afterTask.status === "completed"
     && afterTask.completed_by_username === fixture.roles.admin
     && Number.isSafeInteger(afterTask.completed_at_ms)
@@ -638,8 +640,8 @@ function assertPhaseEightTaskCompletion(initial, final, fixture) {
     && canonicalJson(afterTask.plant_ids) === canonicalJson(beforeTask.plant_ids)
     && canonicalJson(afterTask.plot_ids) === canonicalJson(beforeTask.plot_ids),
   "Phase 8 grouped completion did not persist the expected task state");
-  const beforeJournals = initial?.phase_two_state?.journal || [];
-  const afterJournals = final?.phase_two_state?.journal || [];
+  const beforeJournals = initial?.phase_eight_state?.journal || [];
+  const afterJournals = final?.phase_eight_state?.journal || [];
   const beforeJournalIds = new Set(beforeJournals.map((entry) => entry.public_id));
   const addedJournals = afterJournals.filter((entry) => !beforeJournalIds.has(entry.public_id));
   assert(addedJournals.length === 1, "Phase 8 completion did not add exactly one journal entry");
@@ -657,7 +659,51 @@ function assertPhaseEightTaskCompletion(initial, final, fixture) {
   return { grouped_task_completion_exact: true, completion_journal_exact: true };
 }
 
-function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
+function assertPhaseEightNotificationClear(initial, final, fixture, phaseTwoRan) {
+  const before = initial?.phase_eight_state?.task_notifications;
+  const after = final?.phase_eight_state?.task_notifications;
+  assert(Array.isArray(before) && Array.isArray(after),
+    "Phase 8 task notification projection is missing");
+  const expectedRecipients = phaseTwoRan
+    ? [fixture.roles.admin, fixture.roles.editor, fixture.roles.viewer].sort()
+    : [];
+  assert(before.length === expectedRecipients.length && after.length === before.length
+    && canonicalJson(before.map((row) => row.recipient_username).sort())
+      === canonicalJson(expectedRecipients),
+  "Phase 8 task notification fixture has unexpected recipients");
+  const afterById = new Map(after.map((row) => [row.public_id, row]));
+  assert(afterById.size === after.length, "Phase 8 task notification identities are duplicated");
+  for (const row of before) {
+    const current = afterById.get(row.public_id);
+    assert(typeof row.public_id === "string" && row.public_id
+      && typeof row.stable_digest === "string" && /^[a-f0-9]{64}$/.test(row.stable_digest)
+      && row.garden_id === fixture.gardens.alpha.id
+      && row.notification_type === "task_due"
+      && row.target_type === "task"
+      && row.target_id === fixture.phase_eight.completion_validation_task.public_id
+      && row.dismissed === 0
+      && row.cleared_at_ms === null && row.clear_reason === null
+      && current?.stable_digest === row.stable_digest
+      && current.recipient_username === row.recipient_username
+      && current.garden_id === row.garden_id
+      && current.notification_type === row.notification_type
+      && current.target_type === row.target_type
+      && current.target_id === row.target_id
+      && current.dismissed === row.dismissed
+      && Number.isSafeInteger(current.cleared_at_ms)
+      && current.cleared_at_ms > 0
+      && current.clear_reason === "completed",
+    "Phase 8 changed a task notification beyond the expected completion clear");
+  }
+  return {
+    cleared_count: before.length,
+    updated_identity_digests: before.map((row) => sha256(canonicalJson({
+      public_id: row.public_id,
+    }))).sort(),
+  };
+}
+
+function assertPhaseEightDatabaseState(initial, final, profiles, fixture, phaseTwoRan = false) {
   assert(initial && final, "Phase 8 database state is missing");
   const initialDomainTables = { ...initial.domain_tables };
   const finalDomainTables = { ...final.domain_tables };
@@ -674,8 +720,16 @@ function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
     final.domain_tables[table].row_projections,
   );
   const taskDelta = tableDelta("garden_tasks");
+  const notificationClear = assertPhaseEightNotificationClear(
+    initial, final, fixture, phaseTwoRan,
+  );
+  const notificationDelta = tableDelta("notification_events");
+  assert(notificationDelta.added.length === 0 && notificationDelta.removed.length === 0
+    && canonicalJson(notificationDelta.updated.map((row) => row.identity_digest).sort())
+      === canonicalJson(notificationClear.updated_identity_digests),
+  "Phase 8 cleared notifications outside the completed task");
   const expectedTaskIdentity = sha256(canonicalJson({
-    public_id: fixture.phase_two.task_ids.fertilize_grouped,
+    public_id: fixture.phase_eight.completion_validation_task.public_id,
   }));
   assert(taskDelta.added.length === 0 && taskDelta.removed.length === 0
     && canonicalJson(taskDelta.updated.map((row) => row.identity_digest))
@@ -694,6 +748,7 @@ function assertPhaseEightDatabaseState(initial, final, profiles, fixture) {
   }
   return {
     domain_state_unchanged: true,
+    task_notification_clear: notificationClear,
     ...assertPhaseEightAuthState(initial, final, profiles),
     ...assertPhaseEightAuditState(initial, final, profiles),
     ...assertPhaseEightTaskCompletion(initial, final, fixture),
@@ -738,21 +793,31 @@ function assertPhaseNineAuthState(before, after, fixture) {
 }
 
 function assertPhaseEightWholeTableMutationAccounting(initial, final, fixture, evidence) {
-  const taskId = fixture?.phase_two?.task_ids?.fertilize_grouped;
+  const taskId = fixture?.phase_eight?.completion_validation_task?.public_id;
   assert(typeof taskId === "string" && taskId, "Phase 8 grouped task fixture is missing");
   const passkeyStarts = evidence?.passkey_challenge_projection?.retained_count;
   assert(Number.isSafeInteger(passkeyStarts) && passkeyStarts >= 0,
     "Phase 8 passkey challenge accounting is missing");
+  const expiredChallenges = evidence.passkey_challenge_projection.expired_removed_identity_digests;
+  assert(Array.isArray(expiredChallenges)
+    && expiredChallenges.every((digest) => /^[a-f0-9]{64}$/.test(digest)),
+  "Phase 8 expired passkey challenge identities are missing");
   const taskIdentity = sha256(canonicalJson({ public_id: taskId }));
+  const notificationClear = evidence?.task_notification_clear;
+  assert(Number.isSafeInteger(notificationClear?.cleared_count)
+    && Array.isArray(notificationClear.updated_identity_digests)
+    && notificationClear.updated_identity_digests.length === notificationClear.cleared_count,
+  "Phase 8 task notification accounting is missing");
   const accounting = {
     auth_passkey_challenges: {
       allow_row_delta: true,
       evidence: "phase_eight_browser_passkey_option_starts",
       expected_added: passkeyStarts,
       expected_identity_added: passkeyStarts,
-      expected_identity_removed: 0,
+      expected_identity_removed: expiredChallenges.length,
       expected_identity_updated: 0,
-      expected_removed: 0,
+      expected_removed: expiredChallenges.length,
+      expected_removed_identity_digests: expiredChallenges,
     },
     garden_journal_entries: {
       allow_row_delta: true,
@@ -790,6 +855,16 @@ function assertPhaseEightWholeTableMutationAccounting(initial, final, fixture, e
       expected_identity_updated: 1,
       expected_removed: 1,
       expected_updated_identity_digests: [taskIdentity],
+    },
+    notification_events: {
+      allow_row_delta: true,
+      evidence: "phase_eight_completed_task_notification_clear",
+      expected_added: notificationClear.cleared_count,
+      expected_identity_added: 0,
+      expected_identity_removed: 0,
+      expected_identity_updated: notificationClear.cleared_count,
+      expected_removed: notificationClear.cleared_count,
+      expected_updated_identity_digests: notificationClear.updated_identity_digests,
     },
     provider_daily_usage: {
       allow_row_delta: true,
@@ -863,7 +938,9 @@ function assertPhaseSevenDatabaseState(initial, final, fixture) {
   };
 }
 
-function assertPhaseSevenAuditEvents(baseline, final, fixture, oracle = phaseSevenOracle()) {
+function assertPhaseSevenAuditEvents(
+  baseline, final, fixture, oracle = phaseSevenOracle(), phaseOneRan = false,
+) {
   assert(Array.isArray(baseline?.records) && Array.isArray(final?.records),
     "Phase 7 audit records are missing");
   const contract = oracle.phase_seven.audit_contract;
@@ -906,6 +983,10 @@ function assertPhaseSevenAuditEvents(baseline, final, fixture, oracle = phaseSev
     assert(Object.hasOwn(actorByKind, event.actor), "Phase 7 audit oracle actor is invalid");
     assert(event.garden === null || event.garden === "alpha",
       "Phase 7 audit oracle garden is invalid");
+    // Phase 1 persisted these dismissals in cumulative runs. A fresh Phase 7
+    // fixture still expects each user's first dismissal here.
+    if (phaseOneRan && event.method === "POST"
+      && event.path === "/api/auth/passkeys/prompt/dismiss") return [];
     return Array.from({ length: event.count }, () => ({
       ...actorByKind[event.actor],
       garden_id: event.garden === null ? null : fixture.gardens.alpha.id,
@@ -922,7 +1003,9 @@ function assertPhaseSevenAuditEvents(baseline, final, fixture, oracle = phaseSev
   return { audit_event_count: actual.length, audit_events_exact: true };
 }
 
-function assertPhaseSixAuditEvents(baseline, final, fixture, oracle = phaseSixOracle()) {
+function assertPhaseSixAuditEvents(
+  baseline, final, fixture, oracle = phaseSixOracle(), phaseOneRan = false,
+) {
   assert(Array.isArray(baseline?.records) && Array.isArray(final?.records),
     "Phase 6 audit records are missing");
   const baselineIds = new Set(baseline.records.map((record) => record.id));
@@ -947,6 +1030,10 @@ function assertPhaseSixAuditEvents(baseline, final, fixture, oracle = phaseSixOr
       "Phase 6 audit oracle actor is invalid");
     assert(event.garden === null || ["alpha", "beta"].includes(event.garden),
       "Phase 6 audit oracle garden is invalid");
+    // Phase 1 has already dismissed the administrator's prompt in cumulative
+    // runs; a fresh Phase 6 fixture still expects its first dismissal here.
+    if (phaseOneRan && event.method === "POST"
+      && event.path === "/api/auth/passkeys/prompt/dismiss") return [];
     const actor = event.actor === "admin" ? {
       actor_auth_type: "session",
       actor_role: "admin",
@@ -973,7 +1060,7 @@ function assertPhaseSixAuditEvents(baseline, final, fixture, oracle = phaseSixOr
   const loginCount = contract.events.find((event) => (
     event.method === "POST" && event.path === "/api/auth/login" && event.status_code === 200
   ))?.count;
-  assert(loginCount === 1 + contract.additional_login_count,
+  assert(loginCount === oracle.phase_six.profile_order.length + contract.additional_login_count,
     "Phase 6 audit oracle login ceremony count is inconsistent");
   return {
     additional_login_count: contract.additional_login_count,
@@ -1523,6 +1610,7 @@ function runPhaseNinePerformanceProbes() {
     execFileSync(process.execPath, [
       path.join(ROOT, "scripts", "check_page_performance.cjs"),
       "--url", BASE_URL,
+      "--browser", CHROMIUM_EXECUTABLE,
       "--no-api-stubs",
       "--scenario", "app-auth-large-tabs",
       "--device-profile", deviceProfile,
@@ -1550,6 +1638,7 @@ function runPhaseNinePerformanceProbes() {
     execFileSync(process.execPath, [
       path.join(ROOT, "scripts", "check_page_performance.cjs"),
       "--url", BASE_URL,
+      "--browser", CHROMIUM_EXECUTABLE,
       "--no-api-stubs",
       "--scenario", "app-auth-focus-matrix",
       "--device-profile", deviceProfile,
@@ -1578,6 +1667,7 @@ function runPhaseNinePerformanceProbes() {
   execFileSync(process.execPath, [
     path.join(ROOT, "scripts", "check_page_performance.cjs"),
     "--url", BASE_URL,
+    "--browser", CHROMIUM_EXECUTABLE,
     "--no-api-stubs",
     "--scenario", "app-auth-large-tabs",
     "--device-profile", "desktop",
@@ -1874,14 +1964,14 @@ function assertPhaseThreeProfileEvidence(profiles) {
   ));
   const viewers = profiles.filter((profile) => profile.role === "viewer");
   assert(adminDesktop?.checks?.identify_plant?.create_from_prefill === true
-    && adminDesktop?.checks?.issue_lifecycle?.advisory_non_mutating_before_track === true,
+    && adminDesktop?.checks?.issue_lifecycle?.advisory_non_mutating_before_save === true,
   "Phase 3 administrator desktop photo-to-action proof is incomplete");
   assert(editorDesktop?.checks?.identify_advisory?.advisory_non_mutating === true
     && editorDesktop?.checks?.diagnosis_advisory?.advisory_non_mutating === true
-    && editorDesktop?.checks?.diagnosis_advisory?.explicit_track_action_available === true,
+    && editorDesktop?.checks?.diagnosis_advisory?.explicit_use_diagnosis_action_available === true,
   "Phase 3 editor photo advisory proof is incomplete");
   assert(adminMobile?.checks?.identify_advisory?.advisory_non_mutating === true
-    && adminMobile?.checks?.issue_lifecycle?.advisory_non_mutating_before_track === true,
+    && adminMobile?.checks?.issue_lifecycle?.advisory_non_mutating_before_save === true,
   "Phase 3 mobile photo-to-action proof is incomplete");
   assert(viewers.length === 2 && viewers.every((profile) => (
     profile.checks.viewer_read_only?.identification_write_entry_disabled === true
@@ -2039,7 +2129,7 @@ function assertPhaseFourDatabaseState(initial, final, fixture, oracle, profiles)
     "Phase 4 report response is incomplete");
   const alphaPlots = rowsForGarden(final.report_source_rows.plots, alphaId);
   const zoneCounts = new Map();
-  for (const plot of alphaPlots.filter((row) => row.zone_code)) {
+  for (const plot of alphaPlots.filter((row) => row.zone_code && row.plot_kind !== "container")) {
     zoneCounts.set(plot.zone_code, (zoneCounts.get(plot.zone_code) || 0) + 1);
   }
   const reportZones = report.available_zones.map((zone) => ({
@@ -2062,7 +2152,7 @@ function assertPhaseFourDatabaseState(initial, final, fixture, oracle, profiles)
   if (adminDesktop.checks.planner.scopedReport) {
     const scoped = adminDesktop.checks.planner.scopedReport;
     const zonePlots = rowsForGarden(final.report_source_rows.plots, alphaId)
-      .filter((row) => row.zone_code === scoped.zone_code);
+      .filter((row) => row.zone_code === scoped.zone_code && row.plot_kind !== "container");
     assert(scoped.plot_use.total_plots === zonePlots.length,
       "Phase 4 zone report total diverged from exact plot source rows");
   }
@@ -2271,7 +2361,9 @@ function phaseFiveChallengeStarts(profiles) {
   return starts;
 }
 
-function assertPhaseOneChallengeProjection(initialState, finalState, profiles, label = "Phase 1") {
+function assertPhaseOneChallengeProjection(
+  initialState, finalState, profiles, label = "Phase 1", { allowExpiredRemovals = false } = {},
+) {
   const challengeDelta = exactProjectionDelta(
     initialState?.challenge_projection,
     finalState?.challenge_projection,
@@ -2280,8 +2372,12 @@ function assertPhaseOneChallengeProjection(initialState, finalState, profiles, l
   const expectedChallengeStarts = phaseFiveChallengeStarts(profiles).login;
   assert(Number.isSafeInteger(finalState?.snapshot_at_ms) && finalState.snapshot_at_ms > 0,
     `${label} passkey challenge boundary lacks a snapshot timestamp`);
+  const removalsValid = allowExpiredRemovals
+    ? challengeDelta.removed.every((row) => Number.isSafeInteger(row.expires_at_ms)
+      && row.expires_at_ms <= finalState.snapshot_at_ms)
+    : challengeDelta.removed.length === 0;
   assert(challengeDelta.added.length <= expectedChallengeStarts
-    && challengeDelta.removed.length === 0 && challengeDelta.updated.length === 0,
+    && removalsValid && challengeDelta.updated.length === 0,
   `${label} passkey challenge rows diverged from browser challenge starts: ${canonicalJson({
     retained: challengeDelta.added.length,
     starts: expectedChallengeStarts,
@@ -2301,6 +2397,8 @@ function assertPhaseOneChallengeProjection(initialState, finalState, profiles, l
     browser_challenge_start_count: expectedChallengeStarts,
     cleaned_before_boundary_count: expectedChallengeStarts - challengeDelta.added.length,
     retained_count: challengeDelta.added.length,
+    expired_removed_identity_digests: challengeDelta.removed
+      .map((row) => row.domain_identity_digest).sort(),
     retained_expired_count: challengeDelta.added.filter(
       (row) => row.expires_at_ms <= finalState.snapshot_at_ms,
     ).length,
@@ -2567,10 +2665,40 @@ function assertPhaseFiveAuditEvents(
     const invitationGardenId = invitationAcceptance
       && request.gardenId !== null && request.gardenId !== undefined
       ? Number(request.gardenId) : null;
+    if (publicAuthRequest) {
+      assert(request.actorAuthType === "none" && request.actorRole === "anonymous"
+        && request.actorUsername === "anonymous",
+      `Phase 5 public auth request was not anonymous: ${normalizedPath}`);
+    }
+    const loginResultPath = request.statusCode === 200
+      && ["/api/auth/login", "/api/auth/passkeys/login/verify"].includes(normalizedPath);
+    let authActor = null;
+    if (loginResultPath) {
+      const result = request.authResult;
+      assert(result && ["ok", "mfa_required", "mfa_setup_required", "password_change_required"]
+        .includes(result.status)
+        && ["admin", "editor", "viewer"].includes(result.role)
+        && new Set([
+          ...Object.values(fixture?.roles || {}),
+          fixture?.phase_five?.invitee_username,
+          fixture?.phase_five?.viewer_invitee_username,
+        ]).has(result.username),
+      `Phase 5 login response identity is incomplete: ${normalizedPath}`);
+      if (normalizedPath === "/api/auth/login") {
+        assert(request.loginUsername === result.username,
+          "Phase 5 password login response username differs from submitted username");
+      }
+      const sessionStarted = result.status !== "mfa_required";
+      assert(normalizedPath !== "/api/auth/passkeys/login/verify" || sessionStarted,
+        "Phase 5 successful passkey verification did not create a session");
+      authActor = sessionStarted ? {
+        authType: "session", role: result.role, username: result.username,
+      } : { authType: "none", role: "anonymous", username: "anonymous" };
+    }
     return [{
-      actor_auth_type: publicAuthRequest ? "none" : request.actorAuthType,
-      actor_role: publicAuthRequest ? "anonymous" : request.actorRole,
-      actor_username: publicAuthRequest ? "anonymous" : request.actorUsername,
+      actor_auth_type: authActor?.authType || (publicAuthRequest ? "none" : request.actorAuthType),
+      actor_role: authActor?.role || (publicAuthRequest ? "anonymous" : request.actorRole),
+      actor_username: authActor?.username || (publicAuthRequest ? "anonymous" : request.actorUsername),
       garden_id: publicAuthRequest ? invitationGardenId : (
         request.gardenId === null || request.gardenId === undefined
           ? null : Number(request.gardenId)
@@ -3734,7 +3862,71 @@ function assertPhaseOneExactSideEffects(initial, final, initialState, finalState
   );
 }
 
-function phaseThreeExactMutationContract(initialState, fixture, oracle) {
+function assertExpiredPasskeyChallengeCleanup(initial, final, label) {
+  const beforeAuth = initial?.phase_five_state;
+  const afterAuth = final?.phase_five_state;
+  assert(Number.isSafeInteger(afterAuth?.snapshot_at_ms) && afterAuth.snapshot_at_ms > 0,
+    `${label} cleanup boundary lacks a snapshot timestamp`);
+  const challengeDelta = exactProjectionDelta(
+    beforeAuth?.challenge_projection, afterAuth.challenge_projection,
+    `${label} passkey challenge`,
+  );
+  assert(challengeDelta.updated.length === 0
+    && challengeDelta.removed.every((row) => Number.isSafeInteger(row.expires_at_ms)
+      && row.expires_at_ms <= afterAuth.snapshot_at_ms
+      && /^[a-f0-9]{64}$/.test(row.domain_identity_digest)),
+  `${label} removed a passkey challenge before expiry or changed an existing challenge`);
+  const challengeRemoved = challengeDelta.removed.map((row) => row.domain_identity_digest).sort();
+  const domainChallengeDelta = stableRowIdentityDelta(
+    initial.domain_tables.auth_passkey_challenges.row_projections,
+    final.domain_tables.auth_passkey_challenges.row_projections,
+  );
+  assert(canonicalJson(domainChallengeDelta.removed.map((row) => row.identity_digest).sort())
+    === canonicalJson(challengeRemoved),
+  `${label} passkey cleanup changed a different database row`);
+  return challengeRemoved;
+}
+
+function assertPhaseThreeExpiryCleanup(initial, final, phaseTwoRan) {
+  const afterAuth = final?.phase_five_state;
+  const challengeRemoved = assertExpiredPasskeyChallengeCleanup(initial, final, "Phase 3");
+
+  const beforeOperations = initial?.phase_three_state?.prior_offline_operations;
+  const afterOperations = final?.phase_three_state?.prior_offline_operations;
+  const phaseTwoOperations = initial?.phase_two_state?.offline_operations;
+  assert(Array.isArray(beforeOperations) && Array.isArray(afterOperations)
+    && Array.isArray(phaseTwoOperations),
+  "Phase 3 prior offline operation projection is missing");
+  const operationIdentity = (row) => sha256(canonicalJson({
+    endpoint: row.endpoint,
+    garden_id: row.garden_id,
+    operation_id: row.operation_id,
+  }));
+  const expectedPrior = phaseTwoOperations.map(operationIdentity).sort();
+  const priorIdentities = beforeOperations.map(operationIdentity).sort();
+  assert(phaseTwoOperations.length === (phaseTwoRan ? 4 : 0)
+    && afterOperations.length === 0
+    && canonicalJson(priorIdentities) === canonicalJson(expectedPrior)
+    && new Set(priorIdentities).size === priorIdentities.length
+    && beforeOperations.every((row) => Number.isSafeInteger(row.created_at_ms)
+      && Number.isSafeInteger(row.expires_at_ms)
+      && row.created_at_ms < row.expires_at_ms
+      && row.expires_at_ms <= afterAuth.snapshot_at_ms),
+  "Phase 3 did not prune exactly the expired Phase 2 offline operations");
+  const domainOperationDelta = stableRowIdentityDelta(
+    initial.domain_tables.offline_create_operations.row_projections,
+    final.domain_tables.offline_create_operations.row_projections,
+  );
+  assert(canonicalJson(domainOperationDelta.removed.map((row) => row.identity_digest).sort())
+    === canonicalJson(priorIdentities),
+  "Phase 3 offline cleanup changed a different database row");
+  return {
+    auth_passkey_challenges: challengeRemoved,
+    offline_create_operations: priorIdentities,
+  };
+}
+
+function phaseThreeExactMutationContract(initialState, fixture, oracle, cleanup = null) {
   const spec = oracle?.phase_three?.whole_table_mutation_accounting;
   const tableCounts = spec?.table_counts;
   const variants = spec?.app_settings_variants;
@@ -3767,6 +3959,9 @@ function phaseThreeExactMutationContract(initialState, fixture, oracle) {
     "provider_daily_usage",
     "shademap_cache",
   ];
+  assert(canonicalJson(spec.expiry_cleanup_tables)
+    === canonicalJson(["auth_passkey_challenges", "offline_create_operations"]),
+  "Phase 3 expiry cleanup oracle is invalid");
   assert(canonicalJson(["app_settings", ...Object.keys(tableCounts)].sort())
     === canonicalJson([...expectedTables].sort()),
   "Phase 3 whole-table mutation oracle does not enumerate the exact owned tables");
@@ -3776,7 +3971,21 @@ function phaseThreeExactMutationContract(initialState, fixture, oracle) {
   const exactCounts = { app_settings: variants[rollupVariant], ...tableCounts };
   const accounting = {};
   for (const table of expectedTables) {
-    const counts = exactCounts[table];
+    const baseCounts = exactCounts[table];
+    assert(baseCounts && [
+      "added", "identity_added", "identity_removed", "identity_updated", "removed",
+    ].every((field) => Number.isSafeInteger(baseCounts[field]) && baseCounts[field] >= 0),
+    `Phase 3 whole-table mutation oracle is invalid: ${table}`);
+    const removedIdentities = cleanup && spec.expiry_cleanup_tables.includes(table)
+      ? cleanup[table] : [];
+    assert(Array.isArray(removedIdentities)
+      && removedIdentities.every((digest) => /^[a-f0-9]{64}$/.test(digest)),
+    `Phase 3 expiry cleanup identities are invalid: ${table}`);
+    const counts = {
+      ...baseCounts,
+      identity_removed: baseCounts.identity_removed + removedIdentities.length,
+      removed: baseCounts.removed + removedIdentities.length,
+    };
     assert(counts && [
       "added",
       "identity_added",
@@ -3796,6 +4005,9 @@ function phaseThreeExactMutationContract(initialState, fixture, oracle) {
       expected_identity_removed: counts.identity_removed,
       expected_identity_updated: counts.identity_updated,
       expected_removed: counts.removed,
+      ...(removedIdentities.length ? {
+        expected_removed_identity_digests: removedIdentities,
+      } : {}),
     };
   }
   return { accounting, allowedTables: new Set(expectedTables), rollupVariant };
@@ -5033,10 +5245,15 @@ function phaseTwoBrowserMutationRecords(profiles, fixture) {
       );
       assert(isSafeRequestId(request.requestId),
         `Phase 2 browser mutation lacks a request ID: ${request.method} ${request.path}`);
+      // A successful login is audited after its session is created. The request
+      // is anonymous, while the persisted audit actor is the logged-in user.
+      const auditActor = request.path === "/api/auth/login" && request.statusCode === 200
+        ? { authType: "session", role: profile.role, username: fixture.roles[profile.role] }
+        : expectedActor;
       return [{
-        actor_auth_type: request.actorAuthType,
-        actor_role: request.actorRole,
-        actor_username: request.actorUsername,
+        actor_auth_type: auditActor.authType,
+        actor_role: auditActor.role,
+        actor_username: auditActor.username,
         browser_profile: `${profile.role}:${profile.profile}`,
         garden_id: gardenId,
         method: request.method,
@@ -5056,13 +5273,20 @@ function normalizePhaseTwoMutationPath(pathname) {
     .replace(/^\/api\/weather\/alerts\/\d+\/dismiss$/, "/api/weather/alerts/{alert_id}/dismiss");
 }
 
-function assertPhaseTwoBrowserMutationMultiset(profiles, fixture, oracle = phaseTwoOracle()) {
+function assertPhaseTwoBrowserMutationMultiset(
+  profiles, fixture, oracle = phaseTwoOracle(), phaseOneRan = false,
+) {
   const expectedByProfile = oracle.phase_two?.browser_mutations;
   assert(expectedByProfile && typeof expectedByProfile === "object" && !Array.isArray(expectedByProfile),
     "Phase 2 browser mutation oracle is missing");
   const expected = Object.entries(expectedByProfile).flatMap(([browserProfile, rows]) => {
     assert(Array.isArray(rows), `Phase 2 browser mutation oracle profile is invalid: ${browserProfile}`);
-    return rows.map((row) => ({
+    // Phase 1 has already dismissed each user's prompt in cumulative runs.
+    // A fresh Phase 2 fixture still expects those three browser mutations.
+    return rows.filter((row) => !(
+      phaseOneRan && row.method === "POST"
+        && row.path === "/api/auth/passkeys/prompt/dismiss"
+    )).map((row) => ({
       browser_profile: browserProfile,
       count: row.count,
       method: row.method,
@@ -5179,10 +5403,13 @@ function phaseThreeBrowserMutationRecords(profiles, fixture) {
       );
       assert(isSafeRequestId(request.requestId),
         `Phase 3 browser mutation lacks a request ID: ${request.method} ${request.path}`);
+      const auditActor = request.path === "/api/auth/login" && request.statusCode === 200
+        ? { authType: "session", role: profile.role, username: fixture.roles[profile.role] }
+        : expectedActor;
       return [{
-        actor_auth_type: request.actorAuthType,
-        actor_role: request.actorRole,
-        actor_username: request.actorUsername,
+        actor_auth_type: auditActor.authType,
+        actor_role: auditActor.role,
+        actor_username: auditActor.username,
         browser_profile: `${profile.role}:${profile.profile}`,
         garden_id: gardenId,
         method: request.method,
@@ -6489,9 +6716,9 @@ function assertPhaseTwoDatabaseState(
       event_type: "observed",
       outcome: "not_seen_blooming_this_season",
       plant_id: phase.plant_ids.bloom_mobile,
-      plot_ids: [phase.plot_ids.alpha],
+      plot_ids: [],
       task_type: "observe_bloom",
-      title: "Not seen blooming this season",
+      title: `Not seen blooming in ${phase.date.slice(0, 4)}`,
     },
     [phase.task_ids.editor_prune]: {
       actor_username: fixture.roles.editor,
@@ -6559,6 +6786,7 @@ function assertPhaseTwoDatabaseState(
       title: expected.title,
     }, `Phase 2 completion journal fields were unexpected: ${taskId}`);
     exact(entry.metadata, {
+      observation_scope: "explicit",
       outcome: expected.outcome,
       selected_plant_ids: [expected.plant_id],
       selected_plot_ids: expected.plot_ids,
@@ -7221,10 +7449,31 @@ function assertExactPhaseOneMobileSnapshot(snapshots, expected) {
     ]),
     "Mobile snapshot payload fields were unexpected",
   );
-  assert(
-    canonicalJson(payload) === canonicalJson(expected.payload),
-    "Mobile snapshot payload did not match the Alpha projection at its save boundary",
-  );
+  const differingPaths = [];
+  const compare = (actual, wanted, path = "payload") => {
+    if (differingPaths.length >= 12) return;
+    if (Array.isArray(actual) || Array.isArray(wanted)) {
+      if (!Array.isArray(actual) || !Array.isArray(wanted)
+        || actual.length !== wanted.length) {
+        differingPaths.push(`${path}.length`);
+      }
+      if (Array.isArray(actual) && Array.isArray(wanted)) {
+        for (let index = 0; index < Math.min(actual.length, wanted.length); index += 1) {
+          compare(actual[index], wanted[index], `${path}[${index}]`);
+        }
+      }
+    } else if (actual && wanted && typeof actual === "object" && typeof wanted === "object") {
+      for (const key of new Set([...Object.keys(actual), ...Object.keys(wanted)])) {
+        compare(actual[key], wanted[key], `${path}.${key}`);
+      }
+    } else if (actual !== wanted) {
+      differingPaths.push(path);
+    }
+  };
+  const exactlyEqual = canonicalJson(payload) === canonicalJson(expected.payload);
+  if (!exactlyEqual) compare(payload, expected.payload);
+  assert(exactlyEqual,
+    `Mobile snapshot payload did not match the Alpha projection at its save boundary (${differingPaths.join(", ")})`);
 }
 
 function assertExactPhaseOneRestoreImportGraphs(initialGraphs, finalGraphs, fixture) {
@@ -7328,6 +7577,8 @@ function assertExactPhaseOneOnboardingGraphs(graphs, expectedByName) {
       archived_at_ms: null,
       color: null,
       container_type: null,
+      container_position_x: null,
+      container_position_y: null,
       display_name: null,
       environment: "indoor",
       garden_id: garden.id,
@@ -8206,6 +8457,7 @@ async function main() {
   };
   let browser;
   let phaseZeroProfileEvidence = null;
+  let phaseZeroChallengeEvidence = null;
   let phaseZeroProfiles = [];
   let phaseOneAuditEvidence = null;
   let phaseOneChallengeEvidence = null;
@@ -8237,21 +8489,25 @@ async function main() {
   let phaseThreeProfiles = [];
   let phaseFourAuditBaseline = null;
   let phaseFourAuditEvidence = null;
+  let phaseFourDatabase = null;
   let phaseFourDatabaseBaseline = null;
   let phaseFourDatabaseEvidence = null;
   let phaseFourProfileEvidence = null;
   let phaseFourProfiles = [];
   let phaseFiveAuditBaseline = null;
   let phaseFiveAuditEvidence = null;
+  let phaseFiveDatabase = null;
   let phaseFiveDatabaseBaseline = null;
   let phaseFiveDatabaseEvidence = null;
   let phaseFiveProfileEvidence = null;
   let phaseFiveProfiles = [];
   let phaseSixDatabaseBaseline = null;
+  let phaseSixDatabase = null;
   let phaseSixAuditEvidence = null;
   let phaseSixProfileSummary = null;
   let phaseSixProfiles = [];
   let phaseSevenDatabaseBaseline = null;
+  let phaseSevenDatabase = null;
   let phaseSevenAuditEvidence = null;
   let phaseSevenDatabaseEvidence = null;
   let phaseSevenPreparation = null;
@@ -8433,6 +8689,8 @@ async function main() {
         username: USERNAME,
       });
       phaseFourProfiles = manifest.profiles.slice(phaseFourProfileStart);
+      currentStage = "phase-four-database-boundary";
+      phaseFourDatabase = await settledDatabaseSnapshot("Phase 4 database boundary");
     }
     if (phaseSelected(5)) {
       currentStage = "phase-five-browser";
@@ -8451,6 +8709,8 @@ async function main() {
         username: USERNAME,
       });
       phaseFiveProfiles = manifest.profiles.slice(phaseFiveProfileStart);
+      currentStage = "phase-five-database-boundary";
+      phaseFiveDatabase = await settledDatabaseSnapshot("Phase 5 database boundary");
     }
     if (phaseSelected(6)) {
       currentStage = "phase-six-browser";
@@ -8468,6 +8728,8 @@ async function main() {
         username: USERNAME,
       });
       phaseSixProfiles = manifest.profiles.slice(phaseSixProfileStart);
+      currentStage = "phase-six-database-boundary";
+      phaseSixDatabase = await settledDatabaseSnapshot("Phase 6 database boundary");
     }
     if (phaseSelected(7)) {
       currentStage = "phase-seven-prerequisites";
@@ -8496,6 +8758,8 @@ async function main() {
         username: USERNAME,
       });
       phaseSevenProfiles = manifest.profiles.slice(phaseSevenProfileStart);
+      currentStage = "phase-seven-database-boundary";
+      phaseSevenDatabase = await settledDatabaseSnapshot("Phase 7 database boundary");
     }
     if (phaseSelected(8)) {
       currentStage = "phase-eight-browser";
@@ -8586,6 +8850,7 @@ async function main() {
           [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
           fixture,
           oracle,
+          phaseOneRan,
         ),
       };
       phaseTwoDatabaseEvidence = {
@@ -8658,75 +8923,81 @@ async function main() {
       );
     }
     if (phaseFourRan) {
-      assert(phaseFourDatabaseBaseline, "Phase 4 database baseline snapshot is missing");
+      assert(phaseFourDatabaseBaseline && phaseFourDatabase,
+        "Phase 4 database boundary snapshots are missing");
       phaseFourProfileEvidence = assertPhaseFourProfileEvidence(
         phaseFourProfiles,
         phaseFourOracleSpec,
       );
       phaseFourDatabaseEvidence = assertPhaseFourDatabaseState(
         phaseFourDatabaseBaseline.phase_four_state,
-        finalDatabase.phase_four_state,
+        phaseFourDatabase.phase_four_state,
         fixture,
         phaseFourOracleSpec,
         phaseFourProfiles,
       );
       phaseFourAuditEvidence = assertPhaseFourAuditEvents(
         phaseFourAuditBaseline,
-        finalDatabase.audit_state,
+        phaseFourDatabase.audit_state,
         phaseFourProfiles,
         fixture,
       );
     }
     if (phaseFiveRan) {
-      assert(phaseFiveDatabaseBaseline, "Phase 5 database baseline snapshot is missing");
+      assert(phaseFiveDatabaseBaseline && phaseFiveDatabase,
+        "Phase 5 database boundary snapshots are missing");
       phaseFiveProfileEvidence = assertPhaseFiveProfileEvidence(
         phaseFiveProfiles,
         phaseFiveOracleSpec,
       );
       phaseFiveDatabaseEvidence = assertPhaseFiveDatabaseState(
         phaseFiveDatabaseBaseline.phase_five_state,
-        finalDatabase.phase_five_state,
+        phaseFiveDatabase.phase_five_state,
         fixture,
         phaseFiveProfiles,
         phaseFiveOracleSpec,
       );
       phaseFiveAuditEvidence = assertPhaseFiveAuditEvents(
         phaseFiveAuditBaseline,
-        finalDatabase.audit_state,
+        phaseFiveDatabase.audit_state,
         phaseFiveProfiles,
         phaseFiveOracleSpec,
         fixture,
       );
     }
     if (phaseSixRan) {
-      assert(phaseSixDatabaseBaseline, "Phase 6 database baseline snapshot is missing");
+      assert(phaseSixDatabaseBaseline && phaseSixDatabase,
+        "Phase 6 database boundary snapshots are missing");
       phaseSixProfileSummary = assertPhaseSixProfileEvidence(
         phaseSixProfiles,
         phaseSixOracleSpec,
       );
       phaseSixAuditEvidence = assertPhaseSixAuditEvents(
         phaseSixDatabaseBaseline.audit_state,
-        finalDatabase.audit_state,
+        phaseSixDatabase.audit_state,
         fixture,
         phaseSixOracleSpec,
+        phaseOneRan,
       );
     }
     if (phaseSevenRan) {
-      assert(phaseSevenDatabaseBaseline, "Phase 7 database baseline snapshot is missing");
+      assert(phaseSevenDatabaseBaseline && phaseSevenDatabase,
+        "Phase 7 database boundary snapshots are missing");
       phaseSevenProfileEvidence = assertPhaseSevenProfileEvidence(
         phaseSevenProfiles,
         phaseSevenOracleSpec,
       );
       phaseSevenDatabaseEvidence = assertPhaseSevenDatabaseState(
         phaseSevenDatabaseBaseline.phase_seven_state,
-        finalDatabase.phase_seven_state,
+        phaseSevenDatabase.phase_seven_state,
         fixture,
       );
       phaseSevenAuditEvidence = assertPhaseSevenAuditEvents(
         phaseSevenDatabaseBaseline.audit_state,
-        finalDatabase.audit_state,
+        phaseSevenDatabase.audit_state,
         fixture,
         phaseSevenOracleSpec,
+        phaseOneRan,
       );
     }
     if (phaseEightRan) {
@@ -8737,6 +9008,17 @@ async function main() {
         finalDatabase,
         phaseEightProfiles,
         fixture,
+        phaseTwoRan,
+      );
+    }
+    if (!phaseOneRan && phaseZeroProfiles.length > 0) {
+      // Password sign-in now starts a passkey challenge before the browser
+      // cancels the native prompt. Account for that exact read side effect.
+      phaseZeroChallengeEvidence = assertPhaseOneChallengeProjection(
+        fixture.database_snapshot.phase_five_state,
+        finalDatabase.phase_five_state,
+        phaseZeroProfiles,
+        "Phase 0",
       );
     }
     const phaseOneSemanticDeltaTables = phaseOneRan ? new Set([
@@ -8761,7 +9043,7 @@ async function main() {
       ...phaseOneSemanticDeltaTables,
       ...PHASE_ONE_EXACT_SIDE_EFFECT_TABLES,
       "auth_passkey_challenges",
-    ]) : phaseOneSemanticDeltaTables;
+    ]) : (phaseZeroChallengeEvidence ? new Set(["auth_passkey_challenges"]) : phaseOneSemanticDeltaTables);
     if (phaseOneRan) {
       assertPhaseOneExactSideEffects(
         fixture.database_snapshot.domain_tables,
@@ -8865,6 +9147,9 @@ async function main() {
         phaseThreeDatabaseBaseline.phase_three_state,
         fixture,
         phaseThreeOracleSpec,
+        assertPhaseThreeExpiryCleanup(
+          phaseThreeDatabaseBaseline, phaseThreeDatabase, phaseTwoRan,
+        ),
       )
       : null;
     const phaseThreeSemanticDeltaTables = phaseThreeRan ? new Set([
@@ -8929,13 +9214,15 @@ async function main() {
     const prePhaseThreeAccounting = Object.fromEntries(
       [...phaseTwoSemanticDeltaTables].map((table) => {
         if (table === "auth_passkey_challenges") {
-          const evidence = phaseTwoRan ? phaseTwoChallengeEvidence : phaseOneChallengeEvidence;
+          const evidence = phaseTwoRan ? phaseTwoChallengeEvidence
+            : phaseOneRan ? phaseOneChallengeEvidence : phaseZeroChallengeEvidence;
           assert(evidence, "Cumulative passkey challenge accounting evidence is missing");
           return [table, {
             allow_row_delta: true,
             evidence: phaseTwoRan
               ? "phase_two_cumulative_browser_challenge_projection"
-              : "phase_one_browser_challenge_projection",
+              : phaseOneRan ? "phase_one_browser_challenge_projection"
+                : "phase_zero_browser_challenge_projection",
             expected_added: evidence.retained_count,
             expected_identity_added: evidence.retained_count,
             expected_identity_removed: 0,
@@ -8975,15 +9262,19 @@ async function main() {
     const phaseFourSelectedSteps = phaseFourProfiles.find((profile) => (
       profile.role === "admin" && profile.profile === "desktop"
     ))?.checks?.planner?.workflowSteps || [];
+    const phaseFourExpiredChallenges = phaseFourRan
+      ? assertExpiredPasskeyChallengeCleanup(phaseFourDatabaseBaseline, phaseFourDatabase, "Phase 4")
+      : [];
     const phaseFourAccounting = {
       auth_passkey_challenges: {
         allow_row_delta: true,
         evidence: "phase_four_public_authentication_options",
         expected_added: phaseFourProfiles.length,
         expected_identity_added: phaseFourProfiles.length,
-        expected_identity_removed: 0,
+        expected_identity_removed: phaseFourExpiredChallenges.length,
         expected_identity_updated: 0,
-        expected_removed: 0,
+        expected_removed: phaseFourExpiredChallenges.length,
+        expected_removed_identity_digests: phaseFourExpiredChallenges,
       },
       garden_task_plants: {
         allow_row_delta: true,
@@ -9040,6 +9331,17 @@ async function main() {
         expected_identity_removed: 0,
         expected_identity_updated: 0,
         expected_removed: 0,
+      },
+      user_calendar_preferences: {
+        allow_row_delta: true,
+        evidence: "phase_four_admin_calendar_preference_requests",
+        // Phase 2 already saved the admin preference. The phase-four PATCH
+        // replaces that row; a standalone phase four inserts it instead.
+        expected_added: 1,
+        expected_identity_added: phaseTwoRan ? 0 : 1,
+        expected_identity_removed: 0,
+        expected_identity_updated: phaseTwoRan ? 1 : 0,
+        expected_removed: phaseTwoRan ? 1 : 0,
       },
     };
     // Cumulative onboarding already created the legacy default garden reused by the viewer invite.
@@ -9872,6 +10174,8 @@ module.exports = {
   settledDatabaseSnapshot,
   sourceProvenance,
   phaseTwoOracle,
+  assertExpiredPasskeyChallengeCleanup,
+  assertPhaseThreeExpiryCleanup,
   phaseThreeExactMutationContract,
   phaseThreeOracle,
   phaseFourOracle,
@@ -9879,6 +10183,7 @@ module.exports = {
   phaseSixOracle,
   phaseSevenOracle,
   assertPhaseEightDatabaseState,
+  assertPhaseEightNotificationClear,
   assertPhaseEightWholeTableMutationAccounting,
   assertPhaseEightProfileEvidence,
   writeManifestAtomic,

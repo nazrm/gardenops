@@ -488,6 +488,26 @@ async function exerciseDownloads(page, diagnostics, fixture) {
   assertNoSecrets(jsonText, fixture);
 
   await openSubMode(page, "activity", "calendar", "#calendar-tab-content");
+  await page.locator('[data-calendar-view="month"]').click();
+  const seededDate = fixture.phase_two.calendar.seeded_event_on;
+  const monthDelta = await page.evaluate((target) => {
+    const [year, month] = target.split("-").map(Number);
+    const today = new Date();
+    return (today.getFullYear() - year) * 12 + today.getMonth() - (month - 1);
+  }, seededDate);
+  assert(Math.abs(monthDelta) < 120, "Seeded calendar month is outside the test navigation range");
+  if (monthDelta !== 0) {
+    const targetLoad = page.waitForResponse((response) => {
+      if (response.request().method() !== "GET") return false;
+      const url = new URL(response.url());
+      return url.pathname === "/api/calendar/events"
+        && (url.searchParams.get("start") || "") <= seededDate
+        && (url.searchParams.get("end") || "") > seededDate;
+    });
+    const navigate = page.locator(monthDelta > 0 ? "#calendar-prev-btn" : "#calendar-next-btn");
+    for (let index = 0; index < Math.abs(monthDelta); index += 1) await navigate.click();
+    assert((await targetLoad).status() === 200, "Seeded calendar month did not load");
+  }
   await visible(
     page.locator("#calendar-export-btn[data-calendar-export-ready='true']"),
     "calendar export readiness",
@@ -497,8 +517,8 @@ async function exerciseDownloads(page, diagnostics, fixture) {
   );
   assert(icsText.startsWith("BEGIN:VCALENDAR\r\n") && icsText.includes("END:VCALENDAR\r\n"),
     "ICS export did not have a complete calendar structure");
-  const seededDate = fixture.phase_two.calendar.seeded_event_on.replaceAll("-", "");
-  assert(icsText.includes(`DTSTART;VALUE=DATE:${seededDate}`),
+  const seededDateIcs = seededDate.replaceAll("-", "");
+  assert(icsText.includes(`DTSTART;VALUE=DATE:${seededDateIcs}`),
     "ICS export omitted the exact seeded calendar date");
   assert(icsText.includes(fixture.phase_two.calendar.seeded_title),
     "ICS export omitted the exact garden-scoped calendar event");
