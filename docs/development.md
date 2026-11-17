@@ -732,8 +732,9 @@ defined in [dependency-security-policy.md](dependency-security-policy.md).
 
 ## Fast Developer Feedback
 
-Run `python3 scripts/check_development.py` during development. It runs lock
-consistency, lint, environment-documentation checks, the full fast disposable
+Run `python3 scripts/check_development.py` during development. It verifies the
+lockfiles and installed Python/Node dependency consistency, then runs lint,
+environment-documentation checks, the full fast disposable
 Postgres backend suite, the frontend build, the synthetic security browser
 smoke, and the focused real-backend Attention journey. For completion/snooze
 work add `--journey task-history`. Preview commands without running them with

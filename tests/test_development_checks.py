@@ -17,12 +17,17 @@ class DevelopmentChecksTest(unittest.TestCase):
     def test_both_profiles_keep_backend_build_and_browser_coverage(self):
         for journey in ("attention", "task-history"):
             commands = checks.commands(journey)
-            self.assertIn("--full-suite", commands[4])
-            self.assertEqual(commands[5], ["npm", "--prefix", "frontend", "run", "build"])
-            self.assertEqual(commands[6][-2:], ["node", "scripts/test_security_browser.mjs"])
-            self.assertIn("--command-database", commands[7])
-            self.assertIn("UV_NO_SYNC=1", commands[7])
-            self.assertTrue(commands[7][-1].endswith("_e2e.sh"))
+            self.assertTrue(any("--full-suite" in command for command in commands))
+            self.assertIn(["npm", "--prefix", "frontend", "run", "build"], commands)
+            self.assertTrue(
+                any(
+                    command[-2:] == ["node", "scripts/test_security_browser.mjs"]
+                    for command in commands
+                )
+            )
+            self.assertIn("--command-database", commands[-1])
+            self.assertIn("UV_NO_SYNC=1", commands[-1])
+            self.assertTrue(commands[-1][-1].endswith("_e2e.sh"))
             self.assertFalse(any("sudo" in command or "gh" in command for command in commands))
 
     def test_failed_check_stops_without_running_later_commands(self):
@@ -47,6 +52,21 @@ class DevelopmentChecksTest(unittest.TestCase):
         subprocess.run(
             ["node", "--test", "tests/stage_timings.test.cjs"], cwd=checks.ROOT, check=True
         )
+
+    def test_stale_node_environment_stops_before_tests(self):
+        command = ["npm", "ci", "--dry-run", "--json"]
+        with (
+            patch("sys.argv", ["check_development.py"]),
+            patch.object(checks, "commands", return_value=[command]),
+            patch.object(
+                checks.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    command, 0, stdout='{"added":1,"changed":0,"removed":0}'
+                ),
+            ),
+        ):
+            self.assertEqual(checks.main(), 1)
 
 
 if __name__ == "__main__":

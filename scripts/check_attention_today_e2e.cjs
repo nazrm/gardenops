@@ -259,7 +259,7 @@ async function checkDesktop(browser) {
   const notificationRowsBefore = notificationSnapshot();
   assertNoActiveGeneratedWateringNotification(notificationRowsBefore);
   const { page, browserErrors, resourceLoadFailures } = await setupPage(browser, { width: 1440, height: 980 });
-  const mapTabpanel = page.getByRole("tabpanel", { name: /map/i });
+  const mapTabpanel = page.getByRole("region", { name: /^map$/i });
   await waitVisible(mapTabpanel, "Map tabpanel");
 
   const panel = page.getByTestId("attention-today-panel");
@@ -305,7 +305,7 @@ async function checkDesktop(browser) {
   );
   await waitVisible(noAction.getByText("1 more item", { exact: true }), "no-action overflow count");
   await noAction.getByTestId("attention-today-view-all-no_action_needed").click();
-  await expectAttribute(page.locator("#top-tab-insights"), "aria-selected", "true", "Insights tab after overflow");
+  await expectAttribute(page.locator("#top-tab-insights"), "aria-current", "page", "Insights navigation after overflow");
   await waitVisible(page.locator("#care-view"), "Care view after overflow");
   await waitVisible(page.getByRole("heading", { name: /^Care Instructions$/i }), "Care heading after overflow");
   await activateTabByKeyboard(page, "#top-tab-map", "Map tab after overflow");
@@ -358,9 +358,12 @@ async function checkDesktop(browser) {
     "upcoming work preference row",
   );
   await settingsAfterCancel.getByTestId("attention-preferences-rule-upcoming-work-panel").uncheck();
-  await settingsAfterCancel.getByTestId("attention-preferences-quiet-digest-enabled").check();
-  await settingsAfterCancel.getByTestId("attention-preferences-quiet-digest-start").fill("21:30");
-  await settingsAfterCancel.getByTestId("attention-preferences-quiet-digest-end").fill("06:15");
+  for (const field of ["enabled", "start", "end"]) {
+    assert(
+      await settingsAfterCancel.getByTestId(`attention-preferences-quiet-digest-${field}`).isDisabled(),
+      `Unavailable digest delivery must keep ${field} disabled`,
+    );
+  }
   await settingsAfterCancel.getByTestId("attention-preferences-weather-watering").uncheck();
   assert(
     await settingsAfterCancel.getByLabel("Custom", { exact: true }).isChecked(),
@@ -409,9 +412,9 @@ async function checkDesktop(browser) {
   );
 
   await todayRegion.getByRole("button", { name: /open task/i }).click();
-  await waitVisible(page.getByRole("tabpanel", { name: /activity/i }), "Activity tabpanel");
+  await waitVisible(page.getByRole("region", { name: /activity/i }), "Activity region");
   await waitVisible(page.getByRole("heading", { name: /^Garden Tasks$/i }), "Garden Tasks heading");
-  await expectAttribute(page.locator("#top-tab-activity"), "aria-selected", "true", "Activity tab");
+  await expectAttribute(page.locator("#top-tab-activity"), "aria-current", "page", "Activity navigation");
   await expectAttribute(page.locator("#sub-mode-tasks"), "aria-selected", "true", "Tasks sub-mode");
   await waitVisible(page.locator("#tasks-list").getByText("Water indoor basil", { exact: true }), "task in Tasks view");
 
@@ -420,9 +423,9 @@ async function checkDesktop(browser) {
   await todayRegion
     .getByTestId("attention-today-primary-action-attn-issue-iss_attention_today_e2e_mildew")
     .click();
-  await waitVisible(page.getByRole("tabpanel", { name: /activity/i }), "Activity tabpanel after issue action");
+  await waitVisible(page.getByRole("region", { name: /activity/i }), "Activity region after issue action");
   await waitVisible(page.getByRole("heading", { name: /^Garden Issues$/i }), "Garden Issues heading");
-  await expectAttribute(page.locator("#top-tab-activity"), "aria-selected", "true", "Activity tab after issue action");
+  await expectAttribute(page.locator("#top-tab-activity"), "aria-current", "page", "Activity navigation after issue action");
   await expectAttribute(page.locator("#sub-mode-issues"), "aria-selected", "true", "Issues sub-mode");
   await waitVisible(
     page.locator("#issues-list").getByText("Check mildew on cucumber", { exact: true }),
@@ -430,7 +433,7 @@ async function checkDesktop(browser) {
   );
   await activateTabByKeyboard(page, "#top-tab-map", "Map tab after issue action");
   await waitVisible(mapTabpanel, "Map tabpanel after issue context restore");
-  await expectAttribute(page.locator("#top-tab-map"), "aria-selected", "true", "Map tab after issue context restore");
+  await expectAttribute(page.locator("#top-tab-map"), "aria-current", "page", "Map navigation after issue context restore");
   await waitVisible(todayRegion, "Today region after issue context restore");
 
   const notificationRowsAfter = notificationSnapshot();

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,18 @@ def commands(journey: str) -> list[list[str]]:
     runner = [python, "scripts/run_fast_postgres_tests.py"]
     checks = [
         ["uv", "lock", "--check", "--offline", "--no-build"],
+        ["uv", "sync", "--locked", "--all-groups", "--check", "--no-config"],
+        [
+            "npm",
+            "ci",
+            "--prefix",
+            "frontend",
+            "--dry-run",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--json",
+        ],
         [python, "-m", "ruff", "check", "."],
         [python, "-m", "ruff", "format", "--check", "."],
         [python, "scripts/check_env_docs.py"],
@@ -65,10 +78,29 @@ def main() -> int:
             bindir = subprocess.check_output(["pg_config", "--bindir"], text=True).strip()
             environment["PATH"] = bindir + os.pathsep + environment.get("PATH", "")
         started = time.monotonic()
-        result = subprocess.run(command, cwd=ROOT, env=environment, check=False)
+        node_check = "--dry-run" in command
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=node_check,
+            text=True,
+        )
         print(f"elapsed={time.monotonic() - started:.2f}s exit={result.returncode}", flush=True)
         if result.returncode:
+            if node_check:
+                print(result.stderr, file=sys.stderr)
             return result.returncode if result.returncode > 0 else 1
+        if node_check:
+            state = json.loads(result.stdout)
+            if any(state.get(key) != 0 for key in ("added", "changed", "removed")):
+                print(
+                    "Installed frontend packages differ from the lockfile; "
+                    "run npm ci --ignore-scripts after policy approval.",
+                    file=sys.stderr,
+                )
+                return 1
     return 0
 
 
