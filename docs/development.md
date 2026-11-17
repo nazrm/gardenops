@@ -715,9 +715,10 @@ browser-workflow contracts using locked dependencies. Tests never need paid call
 
 - Keep changes scoped.
 - Include tests for behavior changes.
-- Require the always-present `Dependency Policy`, `Backend`, and `Frontend`
-  checks. Backend and Frontend wait for the policy gate before installing the
-  pull request dependency graph.
+- GitHub Actions is disabled. The host-managed `Local Release Gate` is the
+  required approval; its trusted builder runs dependency policy, audits, the
+  full backend suite and all browser/performance phases against the candidate.
+  Developer feedback is not a substitute for that sealed release evidence.
 - Update public docs when behavior, setup, environment variables, or deployment
   expectations change.
 - Do not commit `.env`, database dumps, media uploads, local terrain files, or
@@ -728,3 +729,36 @@ review prompts, Dependabot handling, and merge gates, see
 [pr-review-runbook.md](pr-review-runbook.md).
 The release-age tiers, advisory-delta behavior, and verified security bypass are
 defined in [dependency-security-policy.md](dependency-security-policy.md).
+
+## Fast Developer Feedback
+
+Run `python3 scripts/check_development.py` during development. It runs lock
+consistency, lint, environment-documentation checks, the full fast disposable
+Postgres backend suite, the frontend build, the synthetic security browser
+smoke, and the focused real-backend Attention journey. For completion/snooze
+work add `--journey task-history`. Preview commands without running them with
+`--list`.
+
+Prerequisites: locked Python test/lint dependencies in `.venv`, frontend
+dependencies, local PostgreSQL binaries and Chromium. Set `CHROMIUM_PATH` when
+Chromium is not discoverable. Install dependencies only after the trusted
+dependency policy approves changes; this command does not install packages,
+approve releases, publish checks, merge, or deploy. Both database runners create
+disposable clusters; never provide production database credentials.
+
+Selection is explicit, not inferred from directories: Python tests also exercise
+frontend contracts. For map, identity, offline, or other changes, also run the
+matching journey documented above. The final candidate still requires all
+phases of the full local release gate; source/test/policy changes require
+supervised review as described in `deployment.md`.
+
+Complete browser runs emit JSON timing lines on stderr with
+`kind: gardenops-stage-timing`, a fixed stage label, elapsed milliseconds, and
+`finished` or `interrupted`. They include journey stages, individual large/focus
+performance probes, and final cleanup/evidence. Timing is diagnostic only:
+`finished` is not a test pass or release approval. Existing stdout manifests and
+sealed receipt formats are unchanged. Compare several runs of the same revision,
+runtime and sample matrix before optimizing. Keep warmups, seven measured runs,
+desktop/mobile coverage, isolation, assertions and failure handling unchanged;
+do not parallelize performance probes or reuse differently configured builds
+based on timings alone.
