@@ -28,6 +28,9 @@ class DevelopmentChecksTest(unittest.TestCase):
             self.assertIn("--command-database", commands[-1])
             self.assertIn("UV_NO_SYNC=1", commands[-1])
             self.assertTrue(commands[-1][-1].endswith("_e2e.sh"))
+            for command in commands:
+                if "ruff" in command:
+                    self.assertIn("--no-cache", command)
             self.assertFalse(any("sudo" in command or "gh" in command for command in commands))
 
     def test_failed_check_stops_without_running_later_commands(self):
