@@ -55,18 +55,18 @@ class DevelopmentChecksTest(unittest.TestCase):
 
     def test_stale_node_environment_stops_before_tests(self):
         command = ["npm", "ci", "--dry-run", "--json"]
-        with (
-            patch("sys.argv", ["check_development.py"]),
-            patch.object(checks, "commands", return_value=[command]),
-            patch.object(
-                checks.subprocess,
-                "run",
-                return_value=subprocess.CompletedProcess(
-                    command, 0, stdout='{"added":1,"changed":0,"removed":0}'
+        for output in ('{"added":1,"changed":0,"removed":0}', "change package\n{}", "[]"):
+            with (
+                self.subTest(output=output),
+                patch("sys.argv", ["check_development.py"]),
+                patch.object(checks, "commands", return_value=[command]),
+                patch.object(
+                    checks.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(command, 0, stdout=output),
                 ),
-            ),
-        ):
-            self.assertEqual(checks.main(), 1)
+            ):
+                self.assertEqual(checks.main(), 1)
 
 
 if __name__ == "__main__":

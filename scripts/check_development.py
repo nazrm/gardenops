@@ -93,8 +93,13 @@ def main() -> int:
                 print(result.stderr, file=sys.stderr)
             return result.returncode if result.returncode > 0 else 1
         if node_check:
-            state = json.loads(result.stdout)
-            if any(state.get(key) != 0 for key in ("added", "changed", "removed")):
+            try:
+                state = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                state = None
+            if not isinstance(state, dict) or any(
+                state.get(key) != 0 for key in ("added", "changed", "removed")
+            ):
                 print(
                     "Installed frontend packages differ from the lockfile; "
                     "run npm ci --ignore-scripts after policy approval.",
