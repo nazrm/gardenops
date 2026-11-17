@@ -763,3 +763,14 @@ runtime and sample matrix before optimizing. Keep warmups, seven measured runs,
 desktop/mobile coverage, isolation, assertions and failure handling unchanged;
 do not parallelize performance probes or reuse differently configured builds
 based on timings alone.
+
+For a focused map/plants measurement, run
+`bash scripts/run_complete_journeys_e2e.sh --expected-head "$(git rev-parse HEAD)" --phase 1`
+from a clean committed checkout. Compare the `phase-one-browser` timing across
+the same nine profiles, not against the shorter developer-feedback command.
+This matrix uses the fresh authenticated profile to avoid waiting for the
+optional passkey-enrolment prompt only when the server explicitly reports
+ineligibility. Eligible and unknown profiles retain the normal prompt wait and
+dismissal checks. Role, viewport, onboarding, mutation, race, trace and database
+boundary coverage are unchanged; this focused run does not replace the full
+`Local Release Gate`.

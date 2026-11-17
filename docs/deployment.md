@@ -41,6 +41,24 @@ release-machinery, or maintenance-policy changes stop for supervised review.
 The retired `gardenops-security-deploy.timer` must stay disabled; it depends on
 GitHub Actions and is outside this release path.
 
+### Supervised Source PRs
+
+Source PRs use the manually invoked, root-owned
+`/usr/local/lib/host-maintenance/host-gardenops-source.py` controller, not the
+unattended dependency updater. After reviewing the full diff, an operator uses
+`approve HEAD --pr NUMBER --base MAIN --live LIVE` to bind a 24-hour review to
+the exact PR, source tree, paths, current main and live release. The controller's
+`build HEAD` runs the canonical isolated builder with every normal policy,
+advisory, backend, frontend and browser check. `verify HEAD` must pass before
+`merge HEAD` can publish the required status and perform a protected exact-head
+merge. `deploy HEAD` then verifies that current main is that merge and its tree
+is identical to the tested head before activating the same sealed artifacts.
+The serving marker retains the tested head; the private deployment record also
+binds the main merge commit. Backups, integrity/health checks and rollback remain
+mandatory. Migrations are not supported by this route. Review, merge and
+activation-attempt receipts stay root-only; uncertain attempts are retained and
+must be investigated, not blindly retried. Changed revisions require new review.
+
 GardenOps can run as a standard FastAPI service behind nginx with PostgreSQL.
 Redis is required for production, internet-exposed, or multi-instance rate
 limiting.
