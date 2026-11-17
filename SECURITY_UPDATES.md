@@ -34,6 +34,23 @@ PR #253 is a one-time supervised catch-up: its reviewed commit must directly
 descend from live `594c92446067ea7ddaf3522e11e636c2dfcc2967`, pass full
 sealed checks without migration changes, and receive local status before merge.
 
+## Supervised PR #254
+
+On 17 November 2026 the owner authorized a one-time exception to merge and
+deploy the developer-feedback changes in PR #254. This exception is limited
+to its reviewed branch, exact candidate/base/live revisions and changed paths;
+it does not broaden unattended maintenance or remove required checks. The
+normal gate requires live sealed-artifact verification before merging, so this
+one supervised release may activate before merge through the existing atomic
+publisher with backup and rollback, then verify the protected exact-head merge.
+Temporary host-side exception copies are disabled after that merge; canonical
+gate scripts and branch protections remain unchanged.
+
+The PR also updates only `opentelemetry-api` from 1.45.1 to 1.45.2 to remediate
+CVE-2026-126360 / GHSA-mf5v-w3w3-f6cg. The patched release satisfies the normal
+release-age window. Trusted base/head advisory evidence and the complete strict
+audit are still required: no vulnerability-audit waiver is authorized here.
+
 ## Checking an alert
 
 Inspect `systemctl status host-app-local-updates.service` and the root-only

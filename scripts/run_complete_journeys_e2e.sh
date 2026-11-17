@@ -456,19 +456,40 @@ BACKEND_PID=""
 FRONTEND_PID=""
 PROVIDER_PID=""
 
+TIMING_STAGE=""
+TIMING_STARTED=$SECONDS
+finish_timing() {
+  [[ -n "$TIMING_STAGE" ]] || return 0
+  printf '{"kind":"gardenops-stage-timing","scope":"runner","stage":"%s","elapsed_ms":%s,"outcome":"%s"}\n' \
+    "$TIMING_STAGE" "$(((SECONDS - TIMING_STARTED) * 1000))" "$1" >&2 || true
+  TIMING_STAGE=""
+}
+start_timing() {
+  finish_timing finished
+  TIMING_STAGE="$1"
+  TIMING_STARTED=$SECONDS
+}
+
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
   set +e
+  if [[ "$status" -eq 0 ]]; then finish_timing finished; else finish_timing interrupted; fi
+  start_timing cleanup
   stop_process_group "$FRONTEND_PID"
   stop_process_group "$BACKEND_PID"
   stop_process_group "$PROVIDER_PID"
   if [[ "$status" -ne 0 ]]; then
     printf 'Private failure artifacts: %s and %s\n' "$ARTIFACT_DIR" "$PRIVATE_DIR" >&2
     finish_private_dir "$status" "$PRIVATE_DIR"
+    finish_timing interrupted
     exit "$status"
   fi
-  finish_private_dir 0 "$PRIVATE_DIR" || exit 1
+  if ! finish_private_dir 0 "$PRIVATE_DIR"; then
+    finish_timing interrupted
+    exit 1
+  fi
+  finish_timing finished
   exit 0
 }
 trap cleanup EXIT
@@ -477,10 +498,12 @@ trap 'exit 143' TERM
 
 [[ "${GARDENOPS_COMPLETE_JOURNEYS_E2E_EXPECTED_HEAD:-}" == "$EXPECTED_HEAD" ]] \
   || die "review-gated expected HEAD was not propagated to the disposable child"
+start_timing dependency-verification
 require_expected_head "$EXPECTED_HEAD"
 verify_locked_dependencies
 write_isolated_vite_config
 
+start_timing fixture-seeding
 "$ROOT_DIR/.venv/bin/python" scripts/seed_complete_journeys_e2e.py \
   --output "$FIXTURE_PATH"
 chmod 600 "$FIXTURE_PATH"
@@ -501,6 +524,7 @@ fi
 setsid "$ROOT_DIR/.venv/bin/uvicorn" "$BACKEND_APPLICATION" \
   --host 127.0.0.1 --port "$BACKEND_PORT" > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
+start_timing frontend-build
 vite_environment "$ROOT_DIR/frontend/node_modules/.bin/vite" build \
   --config "$VITE_CONFIG_PATH" > "$LOG_DIR/frontend-build.log" 2>&1 \
   || die "production frontend build failed"
@@ -519,10 +543,12 @@ setsid env -i \
     > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
+start_timing server-readiness
 wait_for_url "http://127.0.0.1:${BACKEND_PORT}/api/health" "$BACKEND_PID" "FastAPI"
 wait_for_url "http://127.0.0.1:${PROVIDER_PORT}/healthz" "$PROVIDER_PID" "loopback provider"
 wait_for_url "http://localhost:${FRONTEND_PORT}/" "$FRONTEND_PID" "production frontend preview"
 
+start_timing browser-verification
 BASE_URL="http://localhost:${FRONTEND_PORT}" \
   node scripts/check_complete_journeys_e2e.cjs
 chmod 600 "$ARTIFACT_DIR/complete-journeys-manifest.json"

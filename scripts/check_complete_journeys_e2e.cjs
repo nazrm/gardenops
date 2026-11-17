@@ -5,6 +5,7 @@ const { execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { createStageTimings } = require("./e2e/stageTimings.cjs");
 
 const { assert, assertPageStructure } = require("./e2e/completeJourneyAssertions.cjs");
 const {
@@ -1600,6 +1601,19 @@ function readPhaseNineFocusMatrixResult(resultPath, deviceProfile) {
   };
 }
 
+function timedPerformanceProbe(label, ...args) {
+  const timing = createStageTimings("performance");
+  timing.start(label);
+  let finished = false;
+  try {
+    const result = execFileSync(...args);
+    finished = true;
+    return result;
+  } finally {
+    timing.finish(finished ? "finished" : "interrupted");
+  }
+}
+
 function runPhaseNinePerformanceProbes() {
   const results = [];
   const focusMatrixResults = [];
@@ -1607,7 +1621,7 @@ function runPhaseNinePerformanceProbes() {
   const queryPlansPath = phaseNineQueryPlansPath();
   for (const deviceProfile of PHASE_NINE_DEVICE_PROFILES) {
     const resultPath = phaseNinePerformanceResultPath(deviceProfile);
-    execFileSync(process.execPath, [
+    timedPerformanceProbe(`large-${deviceProfile}`, process.execPath, [
       path.join(ROOT, "scripts", "check_page_performance.cjs"),
       "--url", BASE_URL,
       "--browser", CHROMIUM_EXECUTABLE,
@@ -1635,7 +1649,7 @@ function runPhaseNinePerformanceProbes() {
     });
     results.push(readPhaseNinePerformanceResult(resultPath, deviceProfile));
     const focusMatrixResultPath = phaseNineFocusMatrixResultPath(deviceProfile);
-    execFileSync(process.execPath, [
+    timedPerformanceProbe(`focus-${deviceProfile}`, process.execPath, [
       path.join(ROOT, "scripts", "check_page_performance.cjs"),
       "--url", BASE_URL,
       "--browser", CHROMIUM_EXECUTABLE,
@@ -1664,7 +1678,7 @@ function runPhaseNinePerformanceProbes() {
     focusMatrixResults.push(readPhaseNineFocusMatrixResult(focusMatrixResultPath, deviceProfile));
   }
   const smallResultPath = phaseNineQueryScaleResultPath("small");
-  execFileSync(process.execPath, [
+  timedPerformanceProbe("small-desktop", process.execPath, [
     path.join(ROOT, "scripts", "check_page_performance.cjs"),
     "--url", BASE_URL,
     "--browser", CHROMIUM_EXECUTABLE,
@@ -8525,7 +8539,9 @@ async function main() {
   let phaseNineQueryPlanEvidence = null;
   let phaseNineScaleFixtureEvidence = null;
   let thrownError = null;
+  const stageTimings = createStageTimings("journey");
   let currentStage = "runner-startup";
+  stageTimings.start(currentStage);
   try {
     const { chromium, devices } = require("../frontend/node_modules/playwright-core");
     browser = await chromium.launch({
@@ -8542,6 +8558,7 @@ async function main() {
     manifest.evidence_binding.runtime.chromium_version = await browser.version();
     if (phaseSelected(0)) {
       currentStage = "phase-zero-browser";
+      stageTimings.start(currentStage);
       const phaseZeroProfileStart = manifest.profiles.length;
       await runFoundation({
         artifactDir: ARTIFACT_DIR,
@@ -8558,6 +8575,7 @@ async function main() {
     }
     if (phaseSelected(1)) {
       currentStage = "phase-one-browser";
+      stageTimings.start(currentStage);
       const phaseOneProfileStart = manifest.profiles.length;
       await runGardenMapPlants({
         artifactDir: ARTIFACT_DIR,
@@ -8571,10 +8589,12 @@ async function main() {
       });
       phaseOneProfiles = manifest.profiles.slice(phaseOneProfileStart);
       currentStage = "phase-one-database-boundary";
+      stageTimings.start(currentStage);
       phaseOneDatabase = await settledDatabaseSnapshot("Phase 1 database boundary");
     }
     if (phaseSelected(2)) {
       currentStage = "phase-two-prerequisites";
+      stageTimings.start(currentStage);
       phaseTwoPreparation = preparePhaseTwoFixtures();
       assert(
         canonicalJson(phaseTwoPreparation) === canonicalJson({
@@ -8585,9 +8605,11 @@ async function main() {
         "Phase 2 deterministic weather preparation was unexpected",
       );
       currentStage = "phase-two-maintenance";
+      stageTimings.start(currentStage);
       phaseTwoMaintenance = runPhaseTwoMaintenance();
       phaseTwoAuditBaseline = databaseSnapshot().audit_state;
       currentStage = "phase-two-read-only-permutation";
+      stageTimings.start(currentStage);
       const phaseTwoReadOnlyStart = manifest.profiles.length;
       await runPhaseTwoReadOnlyPermutation({
         artifactDir: ARTIFACT_DIR,
@@ -8604,6 +8626,7 @@ async function main() {
         phaseTwoReadOnlyProfiles,
       );
       currentStage = "phase-two-browser";
+      stageTimings.start(currentStage);
       const phaseTwoProfileStart = manifest.profiles.length;
       await runDailyAttentionWork({
         artifactDir: ARTIFACT_DIR,
@@ -8626,6 +8649,7 @@ async function main() {
         "Phase 2 browser did not run the post-save preference delivery boundary");
       phaseTwoProfiles = manifest.profiles.slice(phaseTwoProfileStart);
       currentStage = "phase-two-database-boundary";
+      stageTimings.start(currentStage);
       const phaseTwoAuditRequestIds = phaseTwoBrowserMutationRecords(
         [...phaseTwoReadOnlyProfiles, ...phaseTwoProfiles],
         fixture,
@@ -8637,6 +8661,7 @@ async function main() {
     }
     if (phaseSelected(3)) {
       currentStage = "phase-three-browser";
+      stageTimings.start(currentStage);
       phaseThreeDatabaseBaseline = await settledDatabaseSnapshot("Phase 3 database baseline");
       phaseThreeAuditBaseline = phaseThreeDatabaseBaseline.audit_state;
       const phaseThreeProfileStart = manifest.profiles.length;
@@ -8663,6 +8688,7 @@ async function main() {
       });
       phaseThreeProfiles = manifest.profiles.slice(phaseThreeProfileStart);
       currentStage = "phase-three-database-boundary";
+      stageTimings.start(currentStage);
       const phaseThreeAuditRequestIds = phaseThreeBrowserMutationRecords(
         phaseThreeProfiles,
         fixture,
@@ -8674,6 +8700,7 @@ async function main() {
     }
     if (phaseSelected(4)) {
       currentStage = "phase-four-browser";
+      stageTimings.start(currentStage);
       phaseFourDatabaseBaseline = await settledDatabaseSnapshot("Phase 4 database baseline");
       phaseFourAuditBaseline = phaseFourDatabaseBaseline.audit_state;
       const phaseFourProfileStart = manifest.profiles.length;
@@ -8690,10 +8717,12 @@ async function main() {
       });
       phaseFourProfiles = manifest.profiles.slice(phaseFourProfileStart);
       currentStage = "phase-four-database-boundary";
+      stageTimings.start(currentStage);
       phaseFourDatabase = await settledDatabaseSnapshot("Phase 4 database boundary");
     }
     if (phaseSelected(5)) {
       currentStage = "phase-five-browser";
+      stageTimings.start(currentStage);
       phaseFiveDatabaseBaseline = await settledDatabaseSnapshot("Phase 5 database baseline");
       phaseFiveAuditBaseline = phaseFiveDatabaseBaseline.audit_state;
       const phaseFiveProfileStart = manifest.profiles.length;
@@ -8710,10 +8739,12 @@ async function main() {
       });
       phaseFiveProfiles = manifest.profiles.slice(phaseFiveProfileStart);
       currentStage = "phase-five-database-boundary";
+      stageTimings.start(currentStage);
       phaseFiveDatabase = await settledDatabaseSnapshot("Phase 5 database boundary");
     }
     if (phaseSelected(6)) {
       currentStage = "phase-six-browser";
+      stageTimings.start(currentStage);
       phaseSixDatabaseBaseline = await settledDatabaseSnapshot("Phase 6 database baseline");
       const phaseSixProfileStart = manifest.profiles.length;
       await runOfflineAndFailureRecovery({
@@ -8729,10 +8760,12 @@ async function main() {
       });
       phaseSixProfiles = manifest.profiles.slice(phaseSixProfileStart);
       currentStage = "phase-six-database-boundary";
+      stageTimings.start(currentStage);
       phaseSixDatabase = await settledDatabaseSnapshot("Phase 6 database boundary");
     }
     if (phaseSelected(7)) {
       currentStage = "phase-seven-prerequisites";
+      stageTimings.start(currentStage);
       phaseSevenPreparation = preparePhaseSevenFixtures();
       const staleAgeMs = phaseSevenOracleSpec.phase_seven.fixture.weather.stale_age_ms;
       assert(
@@ -8744,6 +8777,7 @@ async function main() {
         "Phase 7 deterministic stale-weather preparation was unexpected",
       );
       currentStage = "phase-seven-browser";
+      stageTimings.start(currentStage);
       phaseSevenDatabaseBaseline = await settledDatabaseSnapshot("Phase 7 database baseline");
 
       const phaseSevenProfileStart = manifest.profiles.length;
@@ -8759,10 +8793,12 @@ async function main() {
       });
       phaseSevenProfiles = manifest.profiles.slice(phaseSevenProfileStart);
       currentStage = "phase-seven-database-boundary";
+      stageTimings.start(currentStage);
       phaseSevenDatabase = await settledDatabaseSnapshot("Phase 7 database boundary");
     }
     if (phaseSelected(8)) {
       currentStage = "phase-eight-browser";
+      stageTimings.start(currentStage);
       phaseEightDatabaseBaseline = await settledDatabaseSnapshot("Phase 8 database baseline");
       const phaseEightProfileStart = manifest.profiles.length;
       await runAccessibilityAndResponsive({
@@ -8778,22 +8814,27 @@ async function main() {
       phaseEightProfiles = manifest.profiles.slice(phaseEightProfileStart);
     }
     currentStage = "final-database-snapshot";
+    stageTimings.start(currentStage);
     const finalDatabase = await settledDatabaseSnapshot("Final database boundary");
     const phaseNineRan = phaseSelected(9);
     if (phaseSelected(9)) {
       currentStage = "phase-nine-scale-fixtures";
+      stageTimings.start(currentStage);
       phaseNineScaleFixtureEvidence = assertPhaseNineScaleFixtures(preparePhaseNineFixtures());
       currentStage = "phase-nine-real-backend-performance";
+      stageTimings.start(currentStage);
       const phaseNineProbes = runPhaseNinePerformanceProbes();
       phaseNinePerformanceEvidence = phaseNineProbes.browser_profiles;
       phaseNineFocusMatrixEvidence = phaseNineProbes.focus_matrix_profiles;
       phaseNineQueryEvidence = phaseNineProbes.query_evidence;
       phaseNineQueryPlanEvidence = phaseNineProbes.query_plans;
       currentStage = "phase-nine-auth-boundary";
+      stageTimings.start(currentStage);
       phaseNineDatabase = await settledDatabaseSnapshot("Phase 9 auth boundary");
       phaseNineAuthEvidence = assertPhaseNineAuthState(finalDatabase, phaseNineDatabase, fixture);
     }
     currentStage = "cumulative-assertions";
+    stageTimings.start(currentStage);
     writePrivateAssertionCheckpoint({
       finalDatabase,
       phaseFourDatabaseBaseline,
@@ -10002,13 +10043,16 @@ async function main() {
     browser = null;
     manifest.status = "passed";
     currentStage = "complete";
+    stageTimings.start(currentStage);
   } catch (error) {
     thrownError = error;
+    stageTimings.finish("interrupted");
     writePrivateFailure(error);
     manifest.status = "failed";
     manifest.failure = safeFailure(error);
     manifest.failure_stage = currentStage;
   } finally {
+    stageTimings.start("cleanup-and-evidence");
     if (browser) {
       try {
         await browser.close();
@@ -10069,7 +10113,13 @@ async function main() {
         }
       }
     }
-    manifest = writeManifestAtomic(manifest);
+    try {
+      manifest = writeManifestAtomic(manifest);
+      stageTimings.finish(thrownError ? "interrupted" : "finished");
+    } catch (error) {
+      stageTimings.finish("interrupted");
+      throw error;
+    }
   }
   if (thrownError) throw thrownError;
   process.stdout.write(`${JSON.stringify(manifest)}\n`);
