@@ -273,6 +273,47 @@ def test_runner_environment_scrub_is_behavioral() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_runner_lock_cutoff_is_read_from_the_committed_lock(tmp_path: Path) -> None:
+    lock = tmp_path / "uv.lock"
+    cutoff = "2026-11-10T21:59:49.550295Z"
+    lock.write_text(
+        f'version = 1\n[options]\nexclude-newer = "{cutoff}"\n',
+        encoding="utf-8",
+    )
+    valid = _run_runner("--self-test-lock-cutoff", str(lock))
+    assert valid.returncode == 0, valid.stderr
+    assert valid.stdout.splitlines() == [
+        "sync",
+        "--locked",
+        "--all-groups",
+        "--check",
+        "--no-config",
+        "--exclude-newer",
+        cutoff,
+    ]
+
+    lock.write_text('version = 1\n[options]\nexclude-newer = "yesterday"\n', encoding="utf-8")
+    invalid = _run_runner("--self-test-lock-cutoff", str(lock))
+    assert invalid.returncode == 2
+    assert "release-age cutoff" in invalid.stderr
+
+    lock.write_text('version = 1\noptions = "invalid"\n', encoding="utf-8")
+    invalid_options = _run_runner("--self-test-lock-cutoff", str(lock))
+    assert invalid_options.returncode == 2
+    assert "release-age cutoff" in invalid_options.stderr
+
+    lock.write_text("version = 1\n", encoding="utf-8")
+    absent = _run_runner("--self-test-lock-cutoff", str(lock))
+    assert absent.returncode == 0, absent.stderr
+    assert absent.stdout.splitlines() == [
+        "sync",
+        "--locked",
+        "--all-groups",
+        "--check",
+        "--no-config",
+    ]
+
+
 def test_runner_dotenv_disable_contract_is_behavioral(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("GARDENOPS_E2E_DOTENV_CANARY=loaded\n", encoding="utf-8")
     env = os.environ.copy()
@@ -301,7 +342,9 @@ def test_runner_uses_isolated_production_preview_and_locked_dependency_gate() ->
     source = RUNNER.read_text(encoding="utf-8")
     assert "--expected-head <40hex>" in source
     assert "verify_locked_dependencies" in source
-    assert "uv sync --locked --all-groups --check --no-config" in source
+    assert "UV_SYNC_ARGS=(sync --locked --all-groups --check --no-config)" in source
+    assert 'UV_SYNC_ARGS+=(--exclude-newer "$lock_cutoff")' in source
+    assert 'prepare_locked_uv_sync_args "$ROOT_DIR/uv.lock"' in source
     assert "npm ci --dry-run --ignore-scripts" in source
     assert "state.added !== 0 || state.changed !== 0 || state.removed !== 0" in source
     assert 'export HOME="$PRIVATE_DIR/home"' in source
