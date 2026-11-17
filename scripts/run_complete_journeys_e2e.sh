@@ -107,12 +107,49 @@ scrub_inherited_environment() {
   done < <(env)
 }
 
+read_lock_exclude_newer() {
+  local lock_path="$1"
+  /usr/bin/python3 -I - "$lock_path" <<'PY'
+import re
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    lock = tomllib.load(stream)
+
+options = lock.get("options")
+if options is None:
+    raise SystemExit(0)
+if not isinstance(options, dict):
+    raise SystemExit("uv.lock has invalid release-age options")
+cutoff = options.get("exclude-newer")
+if cutoff is None:
+    raise SystemExit(0)
+if not isinstance(cutoff, str) or re.fullmatch(
+    r"20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", cutoff
+) is None:
+    raise SystemExit("uv.lock has an invalid exclude-newer cutoff")
+print(cutoff)
+PY
+}
+
+prepare_locked_uv_sync_args() {
+  local lock_cutoff
+  UV_SYNC_ARGS=(sync --locked --all-groups --check --no-config)
+  lock_cutoff="$(read_lock_exclude_newer "$1")" \
+    || die "could not read the Python lock release-age cutoff"
+  if [[ -n "$lock_cutoff" ]]; then
+    UV_SYNC_ARGS+=(--exclude-newer "$lock_cutoff")
+  fi
+}
+
 verify_locked_dependencies() {
   local npm_userconfig="$PRIVATE_DIR/npmrc"
   : > "$npm_userconfig"
   chmod 600 "$npm_userconfig"
   command -v uv >/dev/null 2>&1 || die "uv is required to verify the locked Python environment"
-  uv sync --locked --all-groups --check --no-config > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
+  prepare_locked_uv_sync_args "$ROOT_DIR/uv.lock"
+  uv "${UV_SYNC_ARGS[@]}" > "$LOG_DIR/uv-lock-verify.log" 2>&1 \
     || die "locked Python dependency verification failed"
   "$ROOT_DIR/.venv/bin/python" -m pip check > "$LOG_DIR/python-pip-check.log" 2>&1 \
     || die "installed Python dependency verification failed"
@@ -256,6 +293,12 @@ wait_for_url() {
 if [[ "${1:-}" == "--self-test-ports" ]]; then
   [[ "$#" -eq 4 ]] || die "self-test ports require three values"
   validate_distinct_ports "$2" "$3" "$4"
+  exit 0
+fi
+if [[ "${1:-}" == "--self-test-lock-cutoff" ]]; then
+  [[ "$#" -eq 2 ]] || die "lock cutoff self-test requires one uv.lock path"
+  prepare_locked_uv_sync_args "$2"
+  printf '%s\n' "${UV_SYNC_ARGS[@]}"
   exit 0
 fi
 if [[ "${1:-}" == "--self-test-scrub" ]]; then
