@@ -196,6 +196,10 @@ async function reloadAndAccountForAborts(page, diagnostics) {
 }
 
 async function closeMobileSurfaces(page) {
+  if (await page.locator(".bottom-sheet").count()) {
+    await page.locator(".bottom-sheet .sheet-header .close-btn").click();
+    await page.locator(".bottom-sheet").waitFor({ state: "detached" });
+  }
   if (await page.locator("#saved-views-dropdown:not([hidden])").count()) {
     await page.keyboard.press("Escape");
   }
@@ -471,10 +475,20 @@ async function assertGlobalSearch(page, profile, alpha) {
   const result = page.locator(".global-search-dropdown .dropdown-item").filter({ hasText: alpha.plant_name });
   await visible(result, `${profile} global search result`);
   await result.click();
+  const summary = page.locator(".plant-summary");
+  await visible(summary.getByRole("heading", { name: alpha.plant_name }),
+    `${profile} global search plant summary`);
+  const locations = summary.locator("section .button-row button");
+  await visible(locations.first(), `${profile} global search location`);
+  assert(await locations.count() === 1, `${profile} fixture plant has an ambiguous search location`);
+  await locations.first().click();
   await waitFor(
-    async () => await page.locator(`.plot[data-plot-id='${alpha.plot_id}'].highlighted`).count() > 0,
+    async () => await page.locator(`.plot[data-plot-id='${alpha.plot_id}'].selected`).count() > 0,
     `${profile} global search map context`,
   );
+  if (profile === "mobile") {
+    await visible(page.locator(".bottom-sheet"), `${profile} search map details`);
+  }
 }
 
 async function openPlants(page, profile = "desktop") {
@@ -777,8 +791,10 @@ async function createCanonicalContainer(page, alpha, name, {
   const scope = parentObjectId
     ? page.locator("#map-objects-panel .map-object-detail .map-object-action-row")
     : page.locator("#map-objects-panel .map-object-standalone");
-  const details = scope.locator("details").first();
-  await details.locator("summary").click();
+  const details = scope.locator("details").filter({
+    has: page.locator("form.map-object-intent-form:not(.map-object-move-form)"),
+  }).first();
+  if (await details.getAttribute("open") === null) await details.locator("summary").click();
   const form = details.locator("form.map-object-intent-form");
   await visible(form, "canonical container form");
   await form.locator("select").selectOption(type);
@@ -1737,21 +1753,26 @@ async function exerciseSnapshotsAndImport(page, diagnostics, password, alpha, be
   const objectId = await label.getAttribute("data-object-id");
   assert(objectId, "Snapshot divergence object has no public ID");
   await label.click();
-  const surface = page.locator(`.map-object-interaction-surface[data-object-id='${objectId}']`);
   const positionedLabel = page.locator(`.map-object-label[data-object-id='${objectId}']`);
-  await visible(surface, "snapshot divergence map object");
-  const before = await positionedLabel.getAttribute("style");
-  await surface.focus();
-  await surface.press("ArrowRight");
-  await waitFor(async () => await positionedLabel.getAttribute("style") !== before, "snapshot visible divergence");
-  const diverged = await positionedLabel.getAttribute("style");
+  const before = await positionedLabel.textContent();
+  const detailsAction = page.locator("#selected-area-details");
+  await visible(detailsAction, "snapshot divergence area details action");
+  await detailsAction.click();
+  await page.locator("#map-objects-panel .map-object-layout-disclosure summary").click();
+  const form = page.locator("#map-objects-panel .map-object-geometry-form");
+  await visible(form, "snapshot divergence area editor");
+  await form.locator("input[type='text']").first().fill("Snapshot divergence area");
+  await form.locator("button[type='submit']").click();
+  await waitFor(() => positionedLabel.textContent().then((value) => value !== before),
+    "snapshot visible divergence");
+  const diverged = await positionedLabel.textContent();
 
   await openAdminGarden(page);
   await page.locator("#adm-map-layouts-btn").click();
   row = page.locator("#map-layouts-dialog .snapshot-row").filter({ hasText: snapshotName });
   await row.locator(".snapshot-restore").click();
   await page.locator("[role='alertdialog'] .confirm-no").click();
-  assert(await positionedLabel.getAttribute("style") === diverged, "Cancelled restore changed visible state");
+  assert(await positionedLabel.textContent() === diverged, "Cancelled restore changed visible state");
   const restoreObserver = await observeMapRenderChurn(page);
   const replaceChildrenObserver = await observeMapReplaceChildren(page);
   let snapshotRestoreChurn;

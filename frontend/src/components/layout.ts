@@ -147,7 +147,7 @@ export function getAppShellMarkup(): string {
 
       <nav class="top-nav desktop-top-nav" aria-label="${t("nav.main_sections")}" data-i18n-aria-label="nav.main_sections">
         <div class="nav-tabs" id="nav-tabs">
-          <button class="app-brand" type="button" data-brand-home aria-label="${t("nav.map")}" title="${t("nav.map")}">
+          <button class="app-brand" type="button" data-brand-home aria-label="${appTitle} ${t("nav.map")}" title="${t("nav.map")}">
             <img
               class="app-brand-logo"
               src="${headerIconUrl}"
@@ -188,8 +188,8 @@ export function getAppShellMarkup(): string {
           <button id="auth-btn" class="auth-btn" data-auth-trigger title="${t("nav.sign_in")}">${t("nav.sign_in")}</button>
           <span class="notification-bell-wrapper">
             <button id="notification-bell" class="notification-bell" type="button" aria-label="${t("notifications.bell_label")}" title="${t("notifications.bell_label")}">
-              <span class="notification-bell-icon">\uD83D\uDD14</span>
-              <span id="notification-badge" class="notification-badge" hidden>0</span>
+              <svg class="notification-bell-icon" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z"/><path d="M10 21h4"/></svg>
+              <span id="notification-badge" class="notification-badge" aria-hidden="true" hidden>0</span>
             </button>
           </span>
           <button id="theme-toggle" class="theme-toggle" data-theme-toggle aria-label="${t("nav.toggle_theme")}" title="${t("nav.toggle_theme")}"></button>

@@ -25,14 +25,19 @@ Keep the project current:
 - Deploy only from the current `main` branch after the normal build,
   migration, integrity, health, and log checks pass.
 
-The owner authorized daily dependency maintenance on 22 October 2026. Those
-updates run in a separate maintenance checkout, pass the documented tests,
-deploy from `maintenance/daily-updates`, and open/update their PR after live
-verification. This is the authorized exception to the normal main-only rule.
-Do not automatically introduce new database migrations. On 22 October 2026 the
-owner also authorized automatic daily PR merges after all checks pass. Publish
-the tested deployment and let the host's independent protected-CI merge guard
-perform that merge; never bypass it or weaken branch protection.
+The owner authorized daily dependency maintenance and conditional automatic PR
+merges. On 11 November 2026 the owner chose a local-only release gate: GitHub
+Actions is disabled. Routine updates run from the fixed
+`maintenance/local-dependencies` checkout, change only dependency manifests and
+locks, pass the full isolated local checks, deploy sealed artifacts, and then
+open/update their PR. This is the authorized exception to the normal main-only
+rule. The host's independent local gate verifies the exact live release and
+protected PR before merging. Do not bypass that gate or weaken branch
+protection. Source, policy, and migration changes need supervised review; do
+not automatically introduce new database migrations.
+The one-time PR #253 catch-up may deploy a reviewed direct child of live
+`594c92446067ea7ddaf3522e11e636c2dfcc2967` before merge only after full
+sealed checks with no migration changes; its local status must pass before merge.
 Before deploying a dependency update, run the trusted base-branch dependency
 source, advisory-delta and release-age checks against the candidate lockfiles.
 Keep routine updates outside the seven-day cooldown; only generated evidence

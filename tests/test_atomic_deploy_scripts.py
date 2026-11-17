@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 PREFLIGHT = ROOT / "deploy" / "gardenops-release-preflight"
 DEPLOY = ROOT / "deploy" / "gardenops-atomic-deploy"
@@ -118,12 +120,87 @@ def test_atomic_activate_quiesces_writers_before_migration() -> None:
 
     stop = script.index('systemctl stop "$SERVICE"')
     migration = script.index('"import gardenops.db as db; db.run_migrations()"')
-    restore_disabled = script.index("restore_service_on_failure=0", migration)
     integrity = script.index('check_backend_integrity.py" --allow-production')
     switch = script.index('atomic_link "$release" "$CURRENT_LINK"')
 
-    assert stop < migration < restore_disabled < integrity < switch
+    assert stop < migration < integrity < switch
+    assert "restore_service_on_failure=0" not in script[migration:switch]
     assert 'systemctl is-active --quiet "$SERVICE"' in script
     assert "trap restore_quiesced_service EXIT" in script
     assert 'systemctl start "$SERVICE"' in script
     assert "restore_service_on_failure=0" in script
+
+
+@pytest.mark.parametrize(
+    ("failure", "was_active"),
+    [
+        ("migration", True),
+        ("integrity", True),
+        ("integrity", False),
+        ("activation", True),
+        ("integrity-schema-changed", True),
+    ],
+)
+def test_failed_activation_preserves_old_release_and_service(
+    tmp_path: Path, failure: str, was_active: bool
+) -> None:
+    script = DEPLOY.read_text()
+    activation = script[script.index("activate_release()") : script.index("\nrollback_release()")]
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    current = tmp_path / "current"
+    current.symlink_to(old)
+    trace = tmp_path / "trace"
+    harness = r"""
+set -euo pipefail
+release_for_revision() { printf '%s/%s\n' "$REPAIR_ROOT" "$1"; }
+preflight_release() { :; }
+with_release_env() {
+    local stage=integrity
+    [[ "$*" != *db.run_migrations* ]] || stage=migration
+    [[ "${REPAIR_FAIL%%-schema-changed}" != "$stage" ]]
+}
+systemctl() {
+    local selected
+    selected=$(basename "$(readlink -f "$CURRENT_LINK")")
+    printf '%s %s\n' "$1" "$selected" >> "$REPAIR_TRACE"
+    case "$1" in
+        is-active) [[ "$REPAIR_WAS_ACTIVE" == 1 ]] ;;
+        restart) [[ "$REPAIR_FAIL" != activation || "$selected" != new ]] ;;
+        *) return 0 ;;
+    esac
+}
+atomic_link() { ln -sfn "$1" "$2"; }
+migration_digest() {
+    if [[ "$REPAIR_FAIL" == *-schema-changed ]]; then basename "$1";
+    else printf 'unchanged\n'; fi
+}
+wait_for_health() { :; }
+die() { printf '%s\n' "$*" >&2; exit 1; }
+"""
+    result = subprocess.run(
+        ["bash", "-c", harness + activation + "\nactivate_release new"],
+        env={
+            **os.environ,
+            "SERVICE": "test-only",
+            "CURRENT_LINK": str(current),
+            "PREVIOUS_LINK": str(tmp_path / "previous"),
+            "REPAIR_ROOT": str(tmp_path),
+            "REPAIR_TRACE": str(trace),
+            "REPAIR_FAIL": failure,
+            "REPAIR_WAS_ACTIVE": "1" if was_active else "0",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "unbound variable" not in result.stderr
+    assert current.resolve() == old
+    events = trace.read_text().splitlines()
+    assert "stop old" in events
+    if failure == "activation":
+        assert events[-2:] == ["restart new", "restart old"]
+    else:
+        assert ("start old" in events) == (was_active and not failure.endswith("schema-changed"))

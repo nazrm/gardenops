@@ -358,6 +358,39 @@ shift
             self.run_deploy(command=command)
         self.assertFalse(any(c[0] == "/deployer" for c in self.commands))
 
+    def test_healthy_local_release_ahead_of_main_is_not_replaced(self):
+        def command(args, timeout=60):
+            if "merge-base" in args and args[-2:] == [OLD, NEW]:
+                raise RuntimeError("main is behind the installed repair")
+            return self.command(args, timeout)
+
+        result = self.run_deploy(command=command)
+        self.assertEqual(result["phase"], "deferred")
+        self.assertEqual(result["revision"], OLD)
+        self.assertEqual(self.health_calls, [OLD])
+        self.assertFalse(any(c[0] == "/deployer" for c in self.commands))
+
+    def test_divergent_release_and_failed_local_health_still_fail(self):
+        def divergent(args, timeout=60):
+            if "merge-base" in args:
+                raise RuntimeError("divergent history")
+            return self.command(args, timeout)
+
+        with self.assertRaisesRegex(RuntimeError, "divergent"):
+            self.run_deploy(command=divergent)
+        self.assertEqual(self.health_calls, [])
+
+        def behind(args, timeout=60):
+            if "merge-base" in args and args[-2:] == [OLD, NEW]:
+                raise RuntimeError("main is behind")
+            return self.command(args, timeout)
+
+        def unhealthy(config, sha):
+            raise ValueError("local health failed")
+
+        with self.assertRaisesRegex(ValueError, "local health failed"):
+            self.run_deploy(command=behind, health=unhealthy)
+
 
 if __name__ == "__main__":
     unittest.main()

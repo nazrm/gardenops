@@ -27,13 +27,6 @@ function profileLabel(options) {
   return `Phase 8 ${options.role}:${options.profile}`;
 }
 
-function taskTitle(fixture, key) {
-  const taskId = fixture.phase_two?.task_ids?.[key];
-  const title = fixture.phase_two?.task_titles?.[taskId];
-  assert(taskId && title, `Missing Phase 8 task fixture: ${key}`);
-  return title;
-}
-
 async function browserRuntime(page) {
   return {
     ...await page.evaluate(() => ({
@@ -141,15 +134,10 @@ async function exerciseMapAndToday(page, options, result) {
 async function exerciseTaskValidation(page, options, result) {
   const label = profileLabel(options);
   await openTasks(page, label);
-  const task = options.profile === "desktop"
-    ? {
-      id: options.fixture.phase_two.task_ids.fertilize_grouped,
-      title: taskTitle(options.fixture, "fertilize_grouped"),
-    }
-    : {
-      id: options.fixture.phase_eight?.completion_validation_task?.public_id,
-      title: options.fixture.phase_eight?.completion_validation_task?.title,
-    };
+  const task = {
+    id: options.fixture.phase_eight?.completion_validation_task?.public_id,
+    title: options.fixture.phase_eight?.completion_validation_task?.title,
+  };
   assert(task?.id && task?.title, `${label} completion-validation fixture is missing`);
   const title = task.title;
   const card = page.locator("#tasks-list .task-card").filter({ hasText: title }).first();
@@ -197,6 +185,8 @@ async function exerciseTaskValidation(page, options, result) {
   await complete.press("Enter");
   const confirmDialog = page.locator(".modal").filter({ has: page.locator(".task-completion-dialog") }).last();
   await visible(confirmDialog, `${label} task completion dialog for confirmation`);
+  await confirmDialog.locator(".task-occurrence-date input[type='date']")
+    .fill(options.fixture.clock.attention_date);
   const selectAll = confirmDialog.locator(".task-completion-select-all");
   await focusByKeyboard(page, selectAll, `${label} task completion select all action`);
   await selectAll.press("Space");
@@ -204,7 +194,7 @@ async function exerciseTaskValidation(page, options, result) {
   assert(!await confirm.isDisabled(), `${label} task completion confirmation remained disabled`);
   const completed = page.waitForResponse((response) => (
     response.request().method() === "POST"
-      && new URL(response.url()).pathname === `/api/tasks/${options.fixture.phase_two.task_ids.fertilize_grouped}/action`
+      && new URL(response.url()).pathname === `/api/tasks/${task.id}/action`
   ));
   await focusByKeyboard(page, confirm, `${label} task completion confirmation action`);
   await confirm.press("Enter");
@@ -383,9 +373,9 @@ async function runProfile(options) {
 
 async function runAccessibilityAndResponsive(options, profileRunner = runProfile) {
   const profiles = [
+    ["admin", "tablet"],
     ["admin", "desktop"],
     ["admin", "mobile"],
-    ["admin", "tablet"],
     ["admin", "desktop-reduced-motion"],
     ["admin", "mobile-reduced-motion"],
     ["admin", "desktop-reflow-200"],

@@ -168,12 +168,21 @@ async function discardExpectedUiFailure(
   await waitFor(() => diagnostics.consoleErrors.length === marks.console + 1,
     `console diagnostic for ${pathname}`);
   const consoleAdded = diagnostics.consoleErrors.splice(marks.console);
-  const classifiedAdded = diagnostics.classifiedConsoleDiagnostics.splice(marks.classified);
-  assert(consoleAdded.length === 1 && classifiedAdded.length === 1
-    && classifiedAdded[0].method === method
-    && classifiedAdded[0].path === pathname
-    && classifiedAdded[0].status === expectedStatus,
+  const classifiedAdded = diagnostics.classifiedConsoleDiagnostics.slice(marks.classified);
+  const expected = classifiedAdded.filter((event) => (
+    event.method === method && event.path === pathname && event.status === expectedStatus
+  ));
+  const unexpected = classifiedAdded.filter((event) => (
+    !expected.includes(event)
+      && !["postauth-signout", "preauth-session-probe"].includes(event.context)
+  ));
+  assert(consoleAdded.length === 1 && expected.length === 1 && unexpected.length === 0
+    && consoleAdded[0] === [expected[0].id, expected[0].context,
+      expected[0].method, expected[0].status, expected[0].path].join(" "),
   `Unexpected browser console diagnostics for ${pathname}`);
+  diagnostics.classifiedConsoleDiagnostics.splice(
+    diagnostics.classifiedConsoleDiagnostics.indexOf(expected[0]), 1,
+  );
 }
 
 function diagnosticMarks(diagnostics) {
@@ -295,8 +304,33 @@ async function enterPasswordLoginStage(page, username, password) {
   await visible(form, "password sign-in form");
   const usernameInput = form.locator("input[name='username']");
   if (await usernameInput.isVisible()) {
-    await usernameInput.fill(username);
-    await form.locator("button[type='submit']").click();
+    // This helper exercises password MFA while a registered passkey is still
+    // available. Cancel only the native prompt for this one login stage.
+    await page.evaluate(() => {
+      const credentials = navigator.credentials;
+      const originalGet = credentials.get.bind(credentials);
+      const originalDescriptor = Object.getOwnPropertyDescriptor(credentials, "get");
+      window.__gardenOpsRestorePasswordStagePasskey = () => {
+        if (originalDescriptor) Object.defineProperty(credentials, "get", originalDescriptor);
+        else Reflect.deleteProperty(credentials, "get");
+      };
+      Object.defineProperty(credentials, "get", {
+        configurable: true,
+        value: (options) => options?.publicKey
+          ? Promise.reject(new DOMException("Cancelled", "NotAllowedError"))
+          : originalGet(options),
+      });
+    });
+    try {
+      await usernameInput.fill(username);
+      await form.locator("button[type='submit']").click();
+      await visible(form.locator("input[name='password']"), "password field");
+    } finally {
+      await page.evaluate(() => {
+        window.__gardenOpsRestorePasswordStagePasskey?.();
+        delete window.__gardenOpsRestorePasswordStagePasskey;
+      });
+    }
   }
   const passwordInput = form.locator("input[name='password']");
   await visible(passwordInput, "password field");
@@ -508,22 +542,25 @@ async function exercisePasskeys(page, fixture, adminPassword, virtualAuthenticat
   const gate = page.locator("#auth-gate-form");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
   await virtualAuthenticator.setUserVerified(false);
-  const rejectedMarks = diagnosticMarks(diagnostics);
-  const rejectedPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
-  await gate.locator("button[type='submit']").click();
-  const rejectedResponse = await rejectedPending;
-  assert(rejectedResponse.status() === 400 || rejectedResponse.status() === 401,
-    `Rejected user verification returned ${rejectedResponse.status()}`);
-  await discardExpectedUiFailure(
-    page,
-    diagnostics,
-    rejectedMarks,
-    "POST",
-    "/api/auth/passkeys/login/verify",
-    rejectedResponse.status(),
-  );
-  assert(await gate.isVisible(), "Rejected user verification left the sign-in gate");
-  await visible(gate.locator("input[name='password']"), "password fallback after rejected passkey");
+  // Chromium refuses a credential without user verification before the app can
+  // send an assertion. Verify the browser rejects it and the UI offers password.
+  let unverifiedAssertionRequests = 0;
+  const onUnverifiedRequest = (request) => {
+    if (request.method() === "POST"
+      && new URL(request.url()).pathname === "/api/auth/passkeys/login/verify") {
+      unverifiedAssertionRequests += 1;
+    }
+  };
+  page.on("request", onUnverifiedRequest);
+  try {
+    await gate.locator("button[type='submit']").click();
+    await visible(gate.locator("input[name='password']"), "password fallback after rejected passkey");
+    assert(await gate.isVisible(), "Rejected user verification left the sign-in gate");
+    assert(unverifiedAssertionRequests === 0,
+      "Unverified passkey assertion was sent to the server");
+  } finally {
+    page.off("request", onUnverifiedRequest);
+  }
   const retryMarks = diagnosticMarks(diagnostics);
   await page.reload({ waitUntil: "domcontentloaded" });
   await visible(gate, "user-verification retry gate");
@@ -566,9 +603,22 @@ async function revokePasskey(page, fixture, guarded, adminPassword) {
   await signOut(page, "revoked passkey", guarded);
   const gate = page.locator("#auth-gate-form");
   await gate.locator("input[name='username']").fill(fixture.roles.admin);
+  await page.waitForLoadState("networkidle");
+  const denialMarks = diagnosticMarks(diagnostics);
   const optionsPending = responseFor(page, "POST", "/api/auth/passkeys/login/options");
+  const revokedVerifyPending = responseFor(page, "POST", "/api/auth/passkeys/login/verify");
   await gate.locator("button[type='submit']").click();
   assert((await optionsPending).ok(), "Revoked passkey options request failed");
+  const revokedVerify = await revokedVerifyPending;
+  assert(revokedVerify.status() === 401, "Revoked passkey was not rejected");
+  await discardExpectedUiFailure(
+    page,
+    diagnostics,
+    denialMarks,
+    "POST",
+    "/api/auth/passkeys/login/verify",
+    401,
+  );
   assert(await gate.isVisible(), "Revoked passkey denial left the sign-in gate");
   const passwordInput = gate.locator("input[name='password']");
   await visible(passwordInput, "revoked passkey password field");

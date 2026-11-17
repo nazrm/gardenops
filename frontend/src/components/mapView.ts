@@ -149,7 +149,7 @@ function ensureZoomControls(grid: HTMLElement): void {
     const btnReset = document.createElement("button");
     btnReset.type = "button";
     btnReset.textContent = "1:1";
-    btnReset.setAttribute("aria-label", t("map.zoom_reset"));
+    btnReset.setAttribute("aria-label", `${t("map.zoom_reset")} 1:1`);
     btnReset.addEventListener("click", () => {
       zoomLevel = 1.0;
       applyZoom(grid);

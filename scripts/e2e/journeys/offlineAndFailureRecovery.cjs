@@ -60,8 +60,8 @@ async function readDrafts(page) {
   });
 }
 
-async function insertFailedDrafts(page, gardenId, journalPayload, retryAsNewTitle) {
-  await page.evaluate(async ({ activeGardenId, rows }) => {
+async function insertFailedDrafts(page, gardenId, ownerId, journalPayload, retryAsNewTitle) {
+  await page.evaluate(async ({ activeGardenId, draftOwnerId, rows }) => {
     const database = await new Promise((resolve, reject) => {
       const request = indexedDB.open("gardenops-offline");
       request.onsuccess = () => resolve(request.result);
@@ -75,6 +75,7 @@ async function insertFailedDrafts(page, gardenId, journalPayload, retryAsNewTitl
           ...row,
           created_at_ms: Date.now() + index,
           garden_id: activeGardenId,
+          owner_id: draftOwnerId,
           last_error: row.last_status === 409
             ? "This saved operation conflicts with changed server data."
             : "The saved operation target no longer exists.",
@@ -94,6 +95,7 @@ async function insertFailedDrafts(page, gardenId, journalPayload, retryAsNewTitl
     }
   }, {
     activeGardenId: gardenId,
+    draftOwnerId: ownerId,
     rows: [
       {
         type: "journal",
@@ -101,10 +103,10 @@ async function insertFailedDrafts(page, gardenId, journalPayload, retryAsNewTitl
         payload: {
           ...journalPayload,
           notes: "Phase 6 explicit retry-as-new observation.",
-          title: retryAsNewTitle,
+          title: "Journal conflict requires a new entry",
         },
       },
-      { type: "issue_create", last_status: 410, payload: { title: "Removed issue target" } },
+      { type: "issue_create", last_status: 410, payload: { issue_type: "other", title: retryAsNewTitle } },
       { type: "harvest_create", last_status: 409, payload: { notes: "Conflicting harvest record" } },
       {
         type: "task_complete",
@@ -305,10 +307,6 @@ async function runOfflineProfile(options, profile) {
     let releaseReplay;
     const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
     const replayGate = new Promise((resolve) => { releaseReplay = resolve; });
-    let firstCaptured;
-    let replayCaptured;
-    const firstSeen = new Promise((resolve) => { firstCaptured = resolve; });
-    const replaySeen = new Promise((resolve) => { replayCaptured = resolve; });
     const lostAckRoute = async (route) => {
       const request = route.request();
       if (request.method() !== "POST"
@@ -318,14 +316,12 @@ async function runOfflineProfile(options, profile) {
       }
       deliveryCount += 1;
       if (deliveryCount === 1) {
-        firstCaptured();
         await firstGate;
         const response = await route.fetch();
         firstResponse = { body: await response.json(), status: response.status() };
         await route.abort("failed");
         return;
       }
-      replayCaptured();
       await replayGate;
       await route.continue();
     };
@@ -333,24 +329,35 @@ async function runOfflineProfile(options, profile) {
     const lostAckFailureMarks = diagnosticMarks(guarded.diagnostics);
     const lostAckFailureCapture = captureNetworkFailures(page);
     await page.context().setOffline(false);
-    await firstSeen;
+    assert(await page.evaluate(() => navigator.onLine),
+      "Phase 6 reconnect did not restore browser online state");
+    await waitFor(() => deliveryCount >= 1, "Phase 6 first reconnect delivery", 20000);
     await waitFor(async () => (await readDrafts(page))[0]?.status === "syncing",
       "Phase 6 retrying queue state");
     await visible(page.locator("#offline-indicator .offline-indicator--syncing"),
       "Phase 6 visible retrying state");
     await selectGarden(page, profile, options.fixture.gardens.beta.id);
     releaseFirst();
-    await replaySeen;
+    // The current garden changed while the first acknowledgement was lost.
+    // Replay pauses safely; the source-garden draft remains pending until the
+    // user returns to its garden, while its committed write stays in Garden A.
+    await waitFor(async () => {
+      const draft = (await readDrafts(page))[0];
+      return draft?.status === "pending" && draft.retry_count === 1;
+    }, "Phase 6 source-garden draft paused after garden switch");
     assert(firstResponse?.status === 201 && firstResponse.body?.id,
       "Phase 6 lost-ack mutation did not commit before response drop");
 
     const alphaState = await browserJson(page, "/api/journal?limit=100", options.fixture.gardens.alpha.id);
     const betaState = await browserJson(page, "/api/journal?limit=100", options.fixture.gardens.beta.id);
-    const entries = (payload) => payload?.entries || payload?.items || payload || [];
+    const entries = (payload) => payload?.entries || payload?.items || [];
     assert(alphaState.status === 200 && entries(alphaState.body).some((entry) => entry.title === title),
       "Phase 6 independent postcondition did not observe the committed journal");
     assert(betaState.status === 200 && !entries(betaState.body).some((entry) => entry.title === title),
       "Phase 6 Garden A draft replayed into Garden B");
+    await selectGarden(page, profile, options.fixture.gardens.alpha.id);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await waitFor(() => deliveryCount >= 2, "Phase 6 lost-ack replay delivery", 30000);
     releaseReplay();
     await waitFor(async () => (await readDrafts(page)).length === 0, "Phase 6 replay queue drain");
     await consumeExpectedNetworkFailure(
@@ -370,9 +377,10 @@ async function runOfflineProfile(options, profile) {
     }
     await page.waitForTimeout(400);
     assert(deliveryCount === 2, "Phase 6 repeated reconnect duplicated the journal mutation");
+    await selectGarden(page, profile, options.fixture.gardens.beta.id);
 
     const failedGarden = options.fixture.gardens.beta.id;
-    await insertFailedDrafts(page, failedGarden, queued.payload, retryAsNewTitle);
+    await insertFailedDrafts(page, failedGarden, queued.owner_id, queued.payload, retryAsNewTitle);
     const failureToggle = page.locator("#offline-indicator .offline-indicator-toggle");
     await visible(failureToggle, "Phase 6 compact failed-work toggle");
     assert(await failureToggle.getAttribute("aria-expanded") === "false",
@@ -384,13 +392,13 @@ async function runOfflineProfile(options, profile) {
       "Phase 6 failed-work recovery expansion");
     const failures = page.locator("#offline-indicator .offline-failure-row");
     await waitFor(async () => await failures.count() === 5, "Phase 6 five-family failed state");
-    assert(await failures.getByRole("button", { name: "Retry as new", exact: true }).count() === 3,
+    assert(await failures.getByRole("button", { name: "Retry as new", exact: true }).count() === 2,
       "Phase 6 recreatable terminal failures were not explicitly recoverable as new operations");
     assert(await failures.getByRole("button", { name: "Discard", exact: true }).count() === 5,
       "Phase 6 terminal failures were not discardable");
     for (const label of [
+      "Journal conflict requires a new entry",
       retryAsNewTitle,
-      "Removed issue target",
       "Conflicting harvest record",
       "Removed care task",
       "Removed plant: removed-target.jpg",
@@ -415,13 +423,10 @@ async function runOfflineProfile(options, profile) {
       "Phase 6 retry-as-new replacement delivery");
     const betaReplacement = await browserJson(
       page,
-      "/api/journal?limit=100",
+      "/api/issues?limit=100",
       options.fixture.gardens.beta.id,
     );
-    const betaReplacementEntries = betaReplacement.body?.entries
-      || betaReplacement.body?.items
-      || betaReplacement.body
-      || [];
+    const betaReplacementEntries = betaReplacement.body?.issues || [];
     assert(betaReplacement.status === 200
       && betaReplacementEntries.filter((entry) => (
         entry.title === retryAsNewTitle

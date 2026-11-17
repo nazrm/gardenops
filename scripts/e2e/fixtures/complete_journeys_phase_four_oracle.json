@@ -47,7 +47,8 @@
         "garden_tasks",
         "inventory_items",
         "inventory_transactions",
-        "procurement_items"
+        "procurement_items",
+        "user_calendar_preferences"
       ],
       "inventory_items_added": 2,
       "inventory_transactions_added": 4,

@@ -217,7 +217,7 @@ async function assertMapFirstGeometry(page, profile) {
 }
 
 async function completeBloomTask(page, card, plantName, notSeen) {
-  await card.getByRole("button", { name: /^Complete$/i }).click();
+  await card.getByRole("button", { name: /^Record outcome$/i }).click();
   const dialog = page.locator(".task-completion-dialog").last();
   await visible(dialog, "bloom completion dialog");
   const checkbox = dialog.getByLabel(plantName, { exact: true });
@@ -281,7 +281,7 @@ async function exerciseGroupedCompletionRestrictions(page, fixture) {
   );
 
   await openCalendarAgenda(page, "desktop");
-  const calendarEvent = page.locator(".fc-event:visible").filter({ hasText: grouped.title }).first();
+  const calendarEvent = page.locator(".calendar-event:visible").filter({ hasText: grouped.title }).first();
   await visible(calendarEvent, "grouped task on Calendar surface");
   await calendarEvent.click();
   await page.locator("#calendar-detail-panel").getByRole("button", { name: /^Complete$/i }).click();
@@ -323,12 +323,14 @@ async function exerciseImmediateSnoozeCorrection(page, fixture) {
   }
   await page.locator("#calendar-loading").waitFor({ state: "hidden" });
 
-  let event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
+  let event = page.locator(".calendar-event:visible").filter({ hasText: task.title }).first();
   if (!await event.count()) {
-    const more = page.locator(".fc-daygrid-more-link:visible").last();
-    await visible(more, "mobile Calendar all-day overflow");
-    await more.click();
-    event = page.locator(".fc-popover .fc-event:visible").filter({ hasText: task.title }).first();
+    const overflow = page.locator(".garden-calendar-day-cell details").filter({
+      has: page.locator(".calendar-event").filter({ hasText: task.title }),
+    }).first();
+    await visible(overflow.locator("summary"), "mobile Calendar all-day overflow");
+    await overflow.locator("summary").click();
+    event = overflow.locator(".calendar-event:visible").filter({ hasText: task.title }).first();
   }
   await visible(event, "dedicated immediate snooze correction Calendar event");
   await event.click();
@@ -362,7 +364,7 @@ async function exerciseImmediateSnoozeCorrection(page, fixture) {
 
     await event.waitFor({ state: "hidden" });
     assert(
-      await page.locator(".fc-event:visible").filter({ hasText: task.title }).count() === 0,
+      await page.locator(".calendar-event:visible").filter({ hasText: task.title }).count() === 0,
       "Calendar correction task remained in the visible week after its +1 week snooze",
     );
 
@@ -474,11 +476,9 @@ async function completePlotDrawerTask(page, fixture) {
   );
   await visible(details, "Phase 2 plot details command");
   const passiveToasts = page.locator("#toast-container .toast:not(.toast-interactive)");
-  for (let index = 0; index < await passiveToasts.count(); index += 1) {
-    assert(await passiveToasts.nth(index).evaluate(
-      (element) => getComputedStyle(element).pointerEvents === "none",
-    ), "Passive toast intercepted the next garden action");
-  }
+  assert(await passiveToasts.evaluateAll((elements) => elements.every(
+    (element) => getComputedStyle(element).pointerEvents === "none",
+  )), "Passive toast intercepted the next garden action");
   await details.click();
   const drawer = page.locator(".drawer");
   await visible(drawer, "plot drawer dialog");
@@ -735,7 +735,7 @@ async function exerciseCalendarLifecycle(
       `calendar ${mode} view`);
   }
   await openCalendarAgenda(page, profile);
-  const seededEvent = page.locator(".fc-event").filter({ hasText: fixture.phase_two.calendar.seeded_title }).first();
+  const seededEvent = page.locator(".calendar-event").filter({ hasText: fixture.phase_two.calendar.seeded_title }).first();
   await visible(seededEvent, "seeded calendar event");
   await seededEvent.click();
   const detail = page.locator("#calendar-detail-panel");
@@ -847,7 +847,7 @@ async function exerciseCalendarLifecycle(
   const eventId = createdPayload.event?.target_id;
   assert(typeof eventId === "string" && /^calevt_[a-z0-9]+$/.test(eventId),
     "Calendar lifecycle create response returned an invalid event ID");
-  const event = page.locator(".fc-event").filter({ hasText: title }).first();
+  const event = page.locator(".calendar-event").filter({ hasText: title }).first();
   await visible(event, "created browser calendar event");
   await event.click();
   await page.locator("[data-calendar-detail-edit-manual-event='true']").click();
@@ -866,7 +866,7 @@ async function exerciseCalendarLifecycle(
     status: "updated",
     statusCode: 200,
   });
-  const edited = page.locator(".fc-event").filter({ hasText: editedTitle }).first();
+  const edited = page.locator(".calendar-event").filter({ hasText: editedTitle }).first();
   await visible(edited, "edited browser calendar event");
   await edited.click();
   await page.locator("[data-calendar-detail-delete-manual-event='true']").click();
@@ -1217,16 +1217,16 @@ async function exerciseTasksCalendarRace(page, context, fixture) {
 
   await selectGarden(page, "desktop", fixture.gardens.alpha.id);
   await openCalendar(page, "desktop");
-  await visible(page.locator(".fc-event").filter({
+  await visible(page.locator(".calendar-event").filter({
     hasText: fixture.phase_two.calendar.seeded_title,
   }).first(), "Alpha calendar event before Calendar A/B/A race");
   await exerciseDelayedGardenRequestRace(page, context, fixture, {
     alphaStart: async () => openCalendar(page, "desktop"),
     assertAlphaDom: async () => {
-      await visible(page.locator(".fc-event").filter({
+      await visible(page.locator(".calendar-event").filter({
         hasText: fixture.phase_two.calendar.seeded_title,
       }).first(), "Alpha calendar event after held Beta Calendar response");
-      assert(await page.locator(".fc-event").filter({ hasText: betaTask.title }).count() === 0,
+      assert(await page.locator(".calendar-event").filter({ hasText: betaTask.title }).count() === 0,
         "Stale Beta calendar DOM replaced Alpha after Calendar A/B/A race");
     },
     betaStart: async () => {
@@ -1399,7 +1399,7 @@ async function exercisePostMutationReload(page, fixture) {
 
   await openCalendar(page, "desktop");
   await visible(
-    page.locator(".fc-event").filter({ hasText: fixture.phase_two.calendar.seeded_title }).first(),
+    page.locator(".calendar-event").filter({ hasText: fixture.phase_two.calendar.seeded_title }).first(),
     "seeded calendar event after reload",
   );
 
@@ -1437,7 +1437,7 @@ async function exerciseMobileCalendarAndNotifications(page, fixture) {
     await waitFor(async () => await button.evaluate((element) => element.classList.contains("active")),
       `mobile calendar ${mode} view`);
   }
-  const seededEvent = page.locator(".fc-event").filter({ hasText: fixture.phase_two.calendar.seeded_title }).first();
+  const seededEvent = page.locator(".calendar-event").filter({ hasText: fixture.phase_two.calendar.seeded_title }).first();
   await visible(seededEvent, "mobile seeded calendar event");
   await seededEvent.click();
   await visible(page.locator("#calendar-detail-panel").getByText(
@@ -1640,7 +1640,7 @@ async function exerciseWeather(page, profile, fixture, recorder) {
   await visible(taskCard(page, taskTitle(fixture, "rain_outdoor").title),
     `${profile} weather refresh in tasks`);
   await openCalendarAgenda(page, profile);
-  await visible(page.locator(".fc-event").filter({ hasText: /Heavy rain/i }).first(),
+  await visible(page.locator(".calendar-event").filter({ hasText: /Heavy rain/i }).first(),
     `${profile} weather refresh in calendar`);
   const badgeAfterWeather = await notificationBadgeState(page, profile);
   assertSaneNotificationBadge(badgeAfterWeather, `${profile} weather`);
@@ -1789,6 +1789,12 @@ async function completeMobileQuickActions(page, fixture) {
   const fertilizeAction = sheet.locator(".quick-action-task-item").filter({ hasText: fertilize.title });
   await visible(fertilizeAction, "mobile fertilize Quick Action");
   await fertilizeAction.click();
+  const fertilizeDialog = page.locator(".task-completion-dialog").last();
+  await visible(fertilizeDialog, "mobile fertilize Quick Action completion dialog");
+  await fertilizeDialog.locator(".confirm-yes").click();
+  await fertilizeDialog.waitFor({ state: "hidden" });
+  await waitFor(async () => await sheet.getAttribute("aria-hidden") === "false",
+    "mobile Quick Actions restoration after fertilize completion");
   await fertilizeAction.waitFor({ state: "hidden" });
   await sheet.locator(".quick-action-back").click();
   await sheet.locator("[data-quick-action='complete-task']").click();
@@ -1812,7 +1818,13 @@ async function completeMobileQuickActions(page, fixture) {
   await bloomAction.click();
   dialog = page.locator(".task-completion-dialog").last();
   await visible(dialog, "mobile bloom Quick Action dialog before submit");
-  await dialog.locator(".task-completion-not-seen").click();
+  const notSeen = dialog.locator(".task-completion-not-seen");
+  await notSeen.click();
+  const seasonClosure = dialog.locator(".task-season-closure input[type='checkbox']");
+  await visible(seasonClosure, "mobile bloom season-closure confirmation");
+  await seasonClosure.check();
+  await notSeen.click();
+  await dialog.waitFor({ state: "hidden" });
   await waitFor(async () => (
     await sheet.getAttribute("aria-hidden") === "false"
       && !await sheet.evaluate((element) => element.hasAttribute("inert"))
@@ -1827,13 +1839,17 @@ async function completeMobileQuickActions(page, fixture) {
 async function exerciseEditorCalendar(page, fixture) {
   await openCalendarAgenda(page, "desktop");
   const task = taskTitle(fixture, "editor_prune");
-  const event = page.locator(".fc-event").filter({ hasText: task.title }).first();
+  const event = page.locator(".calendar-event").filter({ hasText: task.title }).first();
   await visible(event, "editor calendar task");
   await event.click();
   const detail = page.locator("#calendar-detail-panel");
   await detail.getByRole("button", { name: /^Complete$/i }).click();
+  const dialog = page.locator(".task-completion-dialog").last();
+  await visible(dialog, "editor calendar prune completion dialog");
+  await dialog.locator(".confirm-yes").click();
+  await dialog.waitFor({ state: "hidden" });
   await waitFor(
-    async () => await page.locator(".fc-event").filter({ hasText: task.title }).count() === 0,
+    async () => await page.locator(".calendar-event").filter({ hasText: task.title }).count() === 0,
     "editor calendar completion",
   );
 }
@@ -1859,7 +1875,7 @@ async function exerciseEditorWeatherDeduplication(page, fixture) {
   await visible(taskCard(page, taskTitle(fixture, "rain_outdoor").title),
     "editor weather refresh in tasks");
   await openCalendarAgenda(page, "desktop");
-  await visible(page.locator(".fc-event:visible").filter({ hasText: /Heavy rain/i }).first(),
+  await visible(page.locator(".calendar-event:visible").filter({ hasText: /Heavy rain/i }).first(),
     "editor weather refresh in calendar");
   const badge = await notificationBadgeState(page, "desktop");
   assertSaneNotificationBadge(badge, "editor desktop weather");
@@ -2007,7 +2023,7 @@ async function exerciseOfflineTask(page, fixture) {
   await visible(groupedCard, "offline grouped fertilize reschedule task");
   await openCalendarAgenda(page, "mobile");
   await visible(
-    page.locator(".fc-event:visible").filter({ hasText: prune.title }).first(),
+    page.locator(".calendar-event:visible").filter({ hasText: prune.title }).first(),
     "calendar skip task before going offline",
   );
   await openTasks(page, "mobile");
@@ -2061,7 +2077,7 @@ async function exerciseOfflineTask(page, fixture) {
       "offline reschedule queued state");
 
     await openCalendarAgenda(page, "mobile");
-    const pruneEvent = page.locator(".fc-event:visible").filter({ hasText: prune.title }).first();
+    const pruneEvent = page.locator(".calendar-event:visible").filter({ hasText: prune.title }).first();
     await visible(pruneEvent, "offline calendar skip task");
     await pruneEvent.click();
     await page.locator("#calendar-detail-panel").getByRole("button", { name: /^Skip$/i }).click();
@@ -2101,6 +2117,9 @@ async function exerciseOfflineTask(page, fixture) {
     await visible(failedCompletionCard.locator(".task-offline-error").filter({
       hasText: "Deliberate journey sync failure",
     }), "per-task offline failure reason");
+    await failedRecoveryToggle.click();
+    await waitFor(async () => await failedRecoveryToggle.getAttribute("aria-expanded") === "false",
+      "global failed offline work recovery collapse");
     await failedCompletionCard.locator(".task-offline-retry").click();
     await waitFor(
       async () => await failedCompletionCard.getAttribute("data-offline-task-state") === "queued",
@@ -2304,7 +2323,7 @@ async function exerciseViewer(page, diagnostics, profile, fixture) {
   });
   await dismissPersonalViewerWeatherAlert(page, profile);
   await openCalendarAgenda(page, profile);
-  const event = page.locator(".fc-event:visible").filter({ hasText: task.title }).first();
+  const event = page.locator(".calendar-event:visible").filter({ hasText: task.title }).first();
   await visible(event, `${profile} viewer calendar task`);
   await event.click();
   assert(await page.locator("#calendar-detail-panel .calendar-detail-actions").count() === 0,

@@ -872,10 +872,11 @@ def _seed_phase_one_fixtures(conn, optimization_seed: Any) -> None:
         INSERT INTO plots (
             plot_id, garden_id, zone_code, zone_name, plot_number,
             grid_row, grid_col, plot_kind, display_name, container_type,
-            parent_map_object_id, environment
+            parent_map_object_id, container_position_x,
+            container_position_y, environment
         )
         VALUES (%s, %s, 'C', 'Containers', 0, NULL, NULL, 'container',
-                %s, 'planter', %s, 'covered')
+                %s, 'planter', %s, 0, 0, 'covered')
         """,
         (
             PHASE_ONE_CANONICAL_CONTAINER_ID,
@@ -1525,6 +1526,8 @@ def _phase_one_fixture_state(conn, optimization_seed: Any) -> dict[str, Any]:
             "archived_at_ms": None,
             "color": None,
             "container_type": "planter",
+            "container_position_x": 0,
+            "container_position_y": 0,
             "display_name": PHASE_ONE_MAP_UNIT_NAME,
             "environment": "covered",
             "garden_id": alpha_id,
@@ -1631,6 +1634,8 @@ def _garden_graph(conn, *, garden_id: int) -> dict[str, Any]:
             plot_value.plot_kind,
             plot_value.display_name,
             plot_value.container_type,
+            plot_value.container_position_x,
+            plot_value.container_position_y,
             parent.public_id AS parent_object_public_id,
             plot_value.environment,
             plot_value.archived_at_ms,
@@ -1869,6 +1874,16 @@ def _garden_graph(conn, *, garden_id: int) -> dict[str, Any]:
                 "container_type": (
                     str(row["container_type"]) if row["container_type"] is not None else None
                 ),
+                "container_position_x": (
+                    int(row["container_position_x"])
+                    if row["container_position_x"] is not None
+                    else None
+                ),
+                "container_position_y": (
+                    int(row["container_position_y"])
+                    if row["container_position_y"] is not None
+                    else None
+                ),
                 "display_name": (
                     str(row["display_name"]) if row["display_name"] is not None else None
                 ),
@@ -1912,6 +1927,8 @@ def _snapshot_payload_projection(
                 "archived_at_ms": plot["archived_at_ms"],
                 "color": plot["color"],
                 "container_type": plot["container_type"],
+                "container_position_x": plot["container_position_x"],
+                "container_position_y": plot["container_position_y"],
                 "display_name": plot["display_name"],
                 "environment": plot["environment"],
                 "grid_col": plot["grid_col"],
@@ -3481,6 +3498,16 @@ def _phase_three_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
         """,
         (garden_id, operation_prefix),
     ).fetchall()
+    prior_operation_rows = conn.execute(
+        """
+        SELECT garden_id, endpoint, operation_id, created_at_ms, expires_at_ms
+        FROM offline_create_operations
+        WHERE operation_id LIKE 'phase2-%%'
+           OR target_id = ANY(%s)
+        ORDER BY garden_id, endpoint, operation_id
+        """,
+        (list(PHASE_TWO_TASKS.values()),),
+    ).fetchall()
     cleanup_table = conn.execute(
         "SELECT to_regclass('public.media_cleanup_jobs') AS table_name"
     ).fetchone()
@@ -3733,6 +3760,7 @@ def _phase_three_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
             for row in media_rows
         ],
         "offline_operations": [dict(row) for row in operation_rows],
+        "prior_offline_operations": [dict(row) for row in prior_operation_rows],
         "provider_usage": [
             {
                 "feature": str(row["feature"]),
@@ -3990,10 +4018,11 @@ def _phase_four_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                 {
                     "garden_id": int(row["garden_id"]),
                     "plot_id": str(row["plot_id"]),
+                    "plot_kind": str(row["plot_kind"]),
                     "zone_code": str(row["zone_code"] or ""),
                 }
                 for row in conn.execute(
-                    """SELECT ownership.garden_id, plot.plot_id, plot.zone_code
+                    """SELECT ownership.garden_id, plot.plot_id, plot.plot_kind, plot.zone_code
                        FROM plots plot
                        JOIN plot_ownership ownership ON ownership.plot_id = plot.plot_id
                        WHERE ownership.garden_id = ANY(%s)
@@ -4170,7 +4199,7 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
     ).fetchall()
     challenge_rows = conn.execute(
         """
-        SELECT challenges.token_hash, challenges.flow, users.username,
+        SELECT challenges.id, challenges.token_hash, challenges.flow, users.username,
                challenges.session_token_hash IS NOT NULL AS has_session_binding,
                challenges.invitation_token_hash IS NOT NULL AS has_invitation_binding,
                challenges.invitation_scope, challenges.invitee_username,
@@ -4295,6 +4324,11 @@ def _phase_five_runtime_state(conn, optimization_seed: Any) -> dict[str, Any]:
                 "flow": str(row["flow"]),
                 "expires_at_ms": expires_at_ms,
                 "identity_digest": opaque_identity("passkey-challenge", row["token_hash"]),
+                "domain_identity_digest": sha256(
+                    json.dumps(
+                        {"id": int(row["id"])}, separators=(",", ":"), sort_keys=True
+                    ).encode("utf-8")
+                ).hexdigest(),
                 "invitation_binding_present": invitation_bound,
                 "invitation_scope": (str(row["invitation_scope"]) if invitation_bound else None),
                 "lifetime_valid": expires_at_ms > created_at_ms,
@@ -4499,6 +4533,124 @@ def _phase_seven_fixture_state() -> dict[str, Any]:
             "sha256": PHASE_SEVEN_ORACLE_SHA256,
         },
         "support": dict(PHASE_SEVEN_ORACLE["phase_seven"]["support"]),
+    }
+
+
+def _phase_eight_runtime_state(conn) -> dict[str, Any]:
+    task = conn.execute(
+        """
+        SELECT task_value.public_id, task_value.status, task_value.completed_at_ms,
+               task_value.updated_at_ms, completed_by.username AS completed_by_username,
+               ARRAY(
+                   SELECT link.plt_id FROM garden_task_plants link
+                   WHERE link.task_id = task_value.id ORDER BY link.plt_id
+               ) AS plant_ids,
+               ARRAY(
+                   SELECT link.plot_id FROM garden_task_plots link
+                   WHERE link.task_id = task_value.id ORDER BY link.plot_id
+               ) AS plot_ids
+        FROM garden_tasks task_value
+        LEFT JOIN auth_users completed_by ON completed_by.id = task_value.completed_by_user_id
+        WHERE task_value.public_id = %s
+        """,
+        (PHASE_EIGHT_COMPLETION_TASK_PUBLIC_ID,),
+    ).fetchone()
+    if task is None:
+        raise RuntimeError("Phase 8 completion-validation task is missing")
+    journals = conn.execute(
+        """
+        SELECT entry.id, entry.public_id, entry.garden_id, entry.event_type,
+               entry.occurred_on, entry.metadata_json,
+               actor.username AS actor_username,
+               ARRAY(
+                   SELECT link.plt_id FROM garden_journal_entry_plants link
+                   WHERE link.entry_id = entry.id ORDER BY link.plt_id
+               ) AS plant_ids,
+               ARRAY(
+                   SELECT link.plot_id FROM garden_journal_entry_plots link
+                   WHERE link.entry_id = entry.id ORDER BY link.plot_id
+               ) AS plot_ids
+        FROM garden_journal_entries entry
+        LEFT JOIN auth_users actor ON actor.id = entry.actor_user_id
+        WHERE entry.metadata_json::jsonb ->> 'source_task_id' = %s
+        ORDER BY entry.public_id
+        """,
+        (PHASE_EIGHT_COMPLETION_TASK_PUBLIC_ID,),
+    ).fetchall()
+    notifications = conn.execute(
+        """
+        SELECT event.public_id, recipient.username AS recipient_username,
+               event.garden_id, event.notification_type, event.target_type,
+               event.target_id, event.dismissed, event.cleared_at_ms,
+               event.clear_reason,
+               to_jsonb(event) - 'cleared_at_ms' - 'clear_reason' AS stable_payload
+        FROM notification_events event
+        LEFT JOIN auth_users recipient ON recipient.id = event.user_id
+        WHERE event.target_type = 'task'
+          AND event.target_id = %s
+          AND event.notification_type IN ('task_due', 'task_overdue', 'task_upcoming')
+        ORDER BY event.public_id
+        """,
+        (PHASE_EIGHT_COMPLETION_TASK_PUBLIC_ID,),
+    ).fetchall()
+    return {
+        "completion_validation_task": {
+            "public_id": str(task["public_id"]),
+            "status": str(task["status"]),
+            "completed_at_ms": (
+                int(task["completed_at_ms"]) if task["completed_at_ms"] is not None else None
+            ),
+            "completed_by_username": (
+                str(task["completed_by_username"])
+                if task["completed_by_username"] is not None
+                else None
+            ),
+            "updated_at_ms": int(task["updated_at_ms"]),
+            "plant_ids": [str(value) for value in task["plant_ids"]],
+            "plot_ids": [str(value) for value in task["plot_ids"]],
+        },
+        "journal": [
+            {
+                "public_id": str(entry["public_id"]),
+                "garden_id": int(entry["garden_id"]),
+                "event_type": str(entry["event_type"]),
+                "occurred_on": str(entry["occurred_on"]),
+                "metadata": _json_object(entry["metadata_json"], label="Phase 8 journal metadata"),
+                "actor_username": (
+                    str(entry["actor_username"]) if entry["actor_username"] is not None else None
+                ),
+                "plant_ids": [str(value) for value in entry["plant_ids"]],
+                "plot_ids": [str(value) for value in entry["plot_ids"]],
+            }
+            for entry in journals
+        ],
+        "task_notifications": [
+            {
+                "public_id": str(event["public_id"]),
+                "recipient_username": (
+                    str(event["recipient_username"])
+                    if event["recipient_username"] is not None
+                    else None
+                ),
+                "garden_id": int(event["garden_id"]),
+                "notification_type": str(event["notification_type"]),
+                "target_type": str(event["target_type"]),
+                "target_id": str(event["target_id"]),
+                "dismissed": int(event["dismissed"]),
+                "cleared_at_ms": (
+                    int(event["cleared_at_ms"]) if event["cleared_at_ms"] is not None else None
+                ),
+                "clear_reason": (
+                    str(event["clear_reason"]) if event["clear_reason"] is not None else None
+                ),
+                "stable_digest": sha256(
+                    json.dumps(
+                        event["stable_payload"], separators=(",", ":"), sort_keys=True
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+            for event in notifications
+        ],
     }
 
 
@@ -5556,13 +5708,13 @@ def _audit_state(conn) -> dict[str, Any]:
                 WHERE method = 'POST'
                   AND path = '/api/auth/login'
                   AND status_code = 200
-                  AND actor_user_id IS NULL
-                  AND actor_username = 'anonymous'
-                  AND actor_role = 'anonymous'
-                  AND actor_auth_type = 'none'
+                  AND actor_user_id IS NOT NULL
+                  AND actor_username <> 'anonymous'
+                  AND actor_role IN ('admin', 'editor', 'viewer')
+                  AND actor_auth_type = 'session'
                   AND garden_id IS NULL
                   AND remote_host IN ('127.0.0.1', '::1')
-                  AND detail = ''
+                  AND detail LIKE 'auth.login.password %%'
             ) AS expected_login_count,
             COUNT(*) FILTER (
                 WHERE method = 'POST'
@@ -5718,6 +5870,7 @@ def _snapshot(conn, optimization_seed: Any) -> dict[str, Any]:
             "phase_four_state": _phase_four_runtime_state(conn, optimization_seed),
             "phase_five_state": _phase_five_runtime_state(conn, optimization_seed),
             "phase_seven_state": _phase_seven_runtime_state(conn, optimization_seed),
+            "phase_eight_state": _phase_eight_runtime_state(conn),
         },
         "gardens": {
             "alpha": garden_payload(

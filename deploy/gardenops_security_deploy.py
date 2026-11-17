@@ -213,7 +213,19 @@ def run(config, *, apply=False, api=github, execute=command, current=installed, 
     fetched = execute(["git", "-C", repo, "rev-parse", "origin/main"])
     if fetched != target:
         raise ValueError("Default branch changed during fetch")
-    execute(["git", "-C", repo, "merge-base", "--is-ancestor", before, target])
+    try:
+        execute(["git", "-C", repo, "merge-base", "--is-ancestor", before, target])
+    except RuntimeError:
+        # An operator may deploy a locally validated repair before publication.
+        # Never replace that newer release with an older default branch.
+        execute(["git", "-C", repo, "merge-base", "--is-ancestor", target, before])
+        health(config, before)
+        return {
+            "phase": "deferred",
+            "reason": "installed release ahead of main",
+            "revision": before,
+            "main_revision": target,
+        }
     require_reviewed_merges(
         execute(
             ["git", "-C", repo, "rev-list", "--first-parent", before + ".." + target]

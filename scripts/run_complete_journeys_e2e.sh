@@ -492,8 +492,10 @@ setsid node "$ROOT_DIR/scripts/e2e/providers/deterministicLoopbackProvider.cjs" 
 PROVIDER_PID=$!
 
 BACKEND_APPLICATION="gardenops.main:app"
+if ((THROUGH_PHASE >= 4)); then
+  BACKEND_APPLICATION="scripts.e2e.seasonalWorkflowTestApp:app"
+fi
 if ((THROUGH_PHASE >= 9)); then
-  BACKEND_APPLICATION="scripts.e2e.performanceFastapiApp:app"
   export GARDENOPS_PERFORMANCE_QUERY_EVIDENCE_PATH="$ARTIFACT_DIR/phase-nine-query-evidence.jsonl"
 fi
 setsid "$ROOT_DIR/.venv/bin/uvicorn" "$BACKEND_APPLICATION" \

@@ -19,22 +19,27 @@ redaction is retained for old logs and requests.
 
 ## Daily Dependency Maintenance
 
-The managed host checks dependencies daily in a separate checkout. Tested
-updates are deployed from `maintenance/daily-updates` using the atomic wrapper,
-then published as a PR against `main`. This maintenance exception was explicitly
-authorized by the owner on 22 October 2026; ordinary releases still use `main`.
-The job preserves migration digests, takes verified backups, uses disposable
-databases for tests, checks live health and journals, and stops on failed checks.
+The managed host checks dependencies daily in a separate checkout. Routine
+updates come from `maintenance/local-dependencies` and may change only
+dependency manifests and locks. The fixed local builder runs policy, audits,
+backend/frontend tests, and all browser journey phases as an isolated
+`app-build` user. The root-owned publisher deploys only the sealed result,
+then the worker publishes a PR against `main`. The owner authorized this
+deploy-before-PR maintenance exception and conditional automatic merges;
+ordinary source releases still use `main`. The job preserves migration
+digests, takes verified backups, checks live health, and stops on failed checks.
 New database migrations require a supervised deployment. The runtime versions
 used for builds are recorded in `.node-version` and `.python-version`.
 Before deployment, run the trusted dependency-policy checks described in
 `dependency-security-policy.md`. Routine updates must satisfy the seven-day
 release gate; a newer security fix requires generated base/head audit evidence.
-Required GitHub checks must pass before an explicitly authorized PR merge.
-The owner also authorized automatic daily maintenance merges on 22 October
-2026. After PR publication, the host merge guard waits for all checks on the
-exact deployed SHA and merges only an up-to-date protected maintenance branch.
-Changes to CI or maintenance policy stop for supervised review.
+GitHub Actions is disabled for this repository. Both `main` protections require
+the host's `Local Release Gate` status and a pull request. The independent
+gate rechecks the sealed receipt, live release, public health, exact PR head
+and base, and its own newly posted status before an automatic merge. Source,
+release-machinery, or maintenance-policy changes stop for supervised review.
+The retired `gardenops-security-deploy.timer` must stay disabled; it depends on
+GitHub Actions and is outside this release path.
 
 GardenOps can run as a standard FastAPI service behind nginx with PostgreSQL.
 Redis is required for production, internet-exposed, or multi-instance rate
@@ -240,3 +245,22 @@ Before exposing a deployment:
 - Confirm API docs are disabled and CSP is enforced.
 - Run the repository checks from [development.md](development.md).
 - Review [SECURITY.md](../SECURITY.md).
+## Local maintenance recovery
+
+Account deactivation deliberately preserves gardens and owned data. The integrity
+audit reports deactivated owners as a nonblocking retention warning; a missing
+owner remains a blocking error. Neither the audit nor deployment reactivates an
+account, transfers ownership, or removes retained data.
+
+Activation runs in a subshell so its EXIT recovery trap retains its local state.
+If migration or the post-migration integrity check fails before the release
+switch, a previously running service is restarted on the unchanged release only
+when the migration trees match. Changed migrations still require supervised
+recovery rather than starting potentially incompatible old code.
+A service that was already stopped remains stopped. Failed candidate startup
+continues to use the existing migration-compatible rollback checks.
+
+The deployment poller verifies health and defers when the installed revision is
+strictly ahead of main, for example after an approved local repair. Divergent
+history and failed health still stop the poller; this does not authorize any
+deployment or waive merge/CI requirements.

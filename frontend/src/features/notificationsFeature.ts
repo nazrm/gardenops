@@ -164,11 +164,15 @@ function notificationPanelElement(): HTMLElement | null {
 }
 
 function updateNotificationTriggerAccessibility(): void {
-  const label = t(
+  const actionLabel = t(
     notificationPanelOpen
       ? "notifications.close_panel"
       : "notifications.open_panel",
   ) as string;
+  const visibleCount = notificationUnreadCount > 99 ? "99+" : String(notificationUnreadCount);
+  const label = notificationUnreadCount > 0
+    ? `${actionLabel} ${visibleCount}`
+    : actionLabel;
   document
     .querySelectorAll<HTMLElement>(NOTIFICATION_TRIGGER_SELECTOR)
     .forEach((trigger) => {
@@ -672,6 +676,7 @@ function updateTabBadge(
 }
 
 function updateNotificationBadge(): void {
+  updateNotificationTriggerAccessibility();
   const desktopBadge = document.getElementById(
     "notification-badge",
   );

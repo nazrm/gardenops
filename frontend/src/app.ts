@@ -7816,10 +7816,12 @@ async function bootstrapApp(): Promise<void> {
   }, {
     canManageDrafts: () => canWriteInGarden,
     onSyncComplete: refreshAfterOfflineSync,
-    onJournalEntrySaved: async (_entryId, gardenId) => {
+    onJournalEntrySaved: async (entryId, gardenId) => {
       if (gardenId !== getActiveGardenContext()) return;
       try {
         await Promise.all([loadJournalEntries(), fetchPlots()]);
+        if (gardenId !== getActiveGardenContext()) return;
+        await refreshJournalMediaPreviews([String(entryId)]);
       } catch (error) {
         if (gardenId === getActiveGardenContext()) showFetchError(error);
       }

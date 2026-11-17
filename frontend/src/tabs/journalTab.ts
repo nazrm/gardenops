@@ -28,6 +28,7 @@ import {
   enqueueDraft,
   captureOfflineQueueContext,
   assertOfflineQueueContext,
+  isOnline,
 } from "../services/offlineQueue";
 import { syncOfflineDraftsNow } from "../features/offlineFeature";
 import {
@@ -469,7 +470,7 @@ export async function openJournalComposer(
           closeModal();
           options.onSaved?.();
           void syncOfflineDraftsNow().then(() => {
-            if (contextCurrent()) void loadJournalEntries();
+            if (contextCurrent() && isOnline()) void loadJournalEntries();
           }).catch((err: unknown) => {
             if (contextCurrent()) ctx.showToast(getApiErrorMessage(err), "error");
           });

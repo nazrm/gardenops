@@ -336,6 +336,39 @@ async function createGuardedContext(
     locale: "en-US",
     timezoneId: "UTC",
   });
+  // PrivateNetwork provides only loopback, which Chromium reports as offline
+  // even while the disposable backend is reachable. Emulate the intended
+  // online state while preserving explicit Playwright offline transitions.
+  await context.addInitScript(() => {
+    const offlineKey = "__gardenops_complete_journey_offline";
+    let emulatedOffline = false;
+    try {
+      emulatedOffline = window.localStorage.getItem(offlineKey) === "1";
+    } catch {
+      // The initial about:blank document has no site storage.
+    }
+    Object.defineProperty(Navigator.prototype, "onLine", {
+      configurable: true,
+      get: () => !emulatedOffline,
+    });
+    window.__gardenOpsE2ESetOffline = (value) => {
+      emulatedOffline = value;
+      try {
+        if (value) window.localStorage.setItem(offlineKey, "1");
+        else window.localStorage.removeItem(offlineKey);
+      } catch {
+        // Keep the in-memory state on storage-restricted documents.
+      }
+      window.dispatchEvent(new Event(value ? "offline" : "online"));
+    };
+  });
+  const setOffline = context.setOffline.bind(context);
+  context.setOffline = async (value) => {
+    await setOffline(value);
+    await Promise.all(context.pages().map((page) => page.evaluate((offline) => {
+      window.__gardenOpsE2ESetOffline?.(offline);
+    }, value)));
+  };
   const diagnostics = {
     blockedRequests: [],
     classifiedConsoleDiagnostics: [],
@@ -568,16 +601,40 @@ function assertDiagnosticsClean(diagnostics, label) {
 
 async function signInThroughSessionForm(page, username, password) {
   assert(username && password, "Complete journey credentials are required");
+  // This journey tests password sessions. Cancel the browser's native
+  // passkey prompt as a user would, then exercise the app's password fallback.
+  await page.evaluate(() => {
+    const credentials = navigator.credentials;
+    const originalGet = credentials.get.bind(credentials);
+    const originalDescriptor = Object.getOwnPropertyDescriptor(credentials, "get");
+    window.__gardenOpsRestoreCredentialGet = () => {
+      if (originalDescriptor) Object.defineProperty(credentials, "get", originalDescriptor);
+      else Reflect.deleteProperty(credentials, "get");
+    };
+    Object.defineProperty(credentials, "get", {
+      configurable: true,
+      value: (options) => options?.publicKey
+        ? Promise.reject(new DOMException("Cancelled", "NotAllowedError"))
+        : originalGet(options),
+    });
+  });
   const gate = page.locator(".auth-gate");
-  await visible(gate, "session sign-in gate");
-  const form = gate.locator("#auth-gate-form");
-  await form.locator("input[name='username']").fill(username);
-  await form.locator("input[name='username']").press("Enter");
-  const passwordInput = form.locator("input[name='password']");
-  await visible(passwordInput, "session sign-in password field");
-  await passwordInput.fill(password);
-  await passwordInput.press("Enter");
-  await gate.waitFor({ state: "detached", timeout: 15000 });
+  try {
+    await visible(gate, "session sign-in gate");
+    const form = gate.locator("#auth-gate-form");
+    await form.locator("input[name='username']").fill(username);
+    await form.locator("input[name='username']").press("Enter");
+    const passwordInput = form.locator("input[name='password']");
+    await visible(passwordInput, "session sign-in password field");
+    await passwordInput.fill(password);
+    await passwordInput.press("Enter");
+    await gate.waitFor({ state: "detached", timeout: 15000 });
+  } finally {
+    await page.evaluate(() => {
+      window.__gardenOpsRestoreCredentialGet?.();
+      delete window.__gardenOpsRestoreCredentialGet;
+    });
+  }
   const profile = await page.evaluate(async () => {
     const response = await fetch("/api/auth/me", { credentials: "include" });
     return { body: await response.json(), status: response.status };
@@ -672,11 +729,17 @@ function createApiRecorder(page, actor = {}) {
         "/api/auth/passkeys/login/verify",
         "/api/client-errors",
       ]).has(parsed.pathname);
+      let loginUsername = null;
+      if (parsed.pathname === "/api/auth/login" && request.method() === "POST") {
+        try { loginUsername = String(request.postDataJSON()?.username || ""); } catch { /* no JSON */ }
+      }
       const record = {
+        authResult: null,
         actorAuthType: isAnonymousAuditPath ? "none" : (actor.authType || null),
         actorRole: isAnonymousAuditPath ? "anonymous" : (actor.role || null),
         actorUsername: isAnonymousAuditPath ? "anonymous" : (actor.username || null),
         gardenId: headers["x-garden-id"] || currentGardenId,
+        loginUsername,
         method: request.method(),
         operationId: headers["x-offline-operation-id"] || null,
         path: parsed.pathname,
@@ -692,6 +755,23 @@ function createApiRecorder(page, actor = {}) {
       if (record) {
         record.requestId = response.headers()["x-request-id"] || null;
         record.statusCode = response.status();
+        if (response.status() === 200 && new Set([
+          "/api/auth/login",
+          "/api/auth/passkeys/login/verify",
+        ]).has(record.path)) {
+          const responseRead = Promise.resolve()
+            .then(() => response.json())
+            .then((body) => {
+              record.authResult = {
+                role: String(body?.user?.role || ""),
+                status: String(body?.status || ""),
+                username: String(body?.user?.username || ""),
+              };
+            })
+            .catch(() => {})
+            .finally(() => pendingResponseReads.delete(responseRead));
+          pendingResponseReads.add(responseRead);
+        }
         if (new Set([
           "/api/auth/invitations/accept",
           "/api/auth/invitations/passkey/register/verify",
