@@ -2784,7 +2784,7 @@ async function runProfile({
     const profileData = await authenticate(page, username, password);
     guarded.markAuthenticated();
     assert(profileData.role === role, `Fixture role mismatch: expected ${role}`);
-    await dismissProactivePasskeyPrompt(page);
+    await dismissProactivePasskeyPrompt(page, 5_000, profileData);
     result.browser_profile.user_agent = await page.evaluate(() => navigator.userAgent);
     result.browser_profile.device_pixel_ratio = await page.evaluate(() => window.devicePixelRatio);
     result.browser_profile.max_touch_points = await page.evaluate(() => navigator.maxTouchPoints);
