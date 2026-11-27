@@ -653,7 +653,13 @@ async function authenticate(page, username, password) {
   return profile;
 }
 
-async function dismissProactivePasskeyPrompt(page, timeout = 5_000) {
+async function dismissProactivePasskeyPrompt(page, timeout = 5_000, authProfile = null) {
+  // A fresh server profile can rule out the optional prompt without a timeout.
+  if (authProfile?.passkey_prompt_eligible === false) {
+    assert(await page.locator(".passkey-prompt-modal:visible").count() === 0,
+      "Ineligible session unexpectedly displayed a passkey prompt");
+    return false;
+  }
   const dialog = page.locator(".modal[data-passkey-prompt-ready='true']:visible").filter({
     has: page.locator(".passkey-prompt-modal"),
   }).last();

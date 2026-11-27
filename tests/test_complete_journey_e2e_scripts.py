@@ -781,6 +781,51 @@ def test_phase_one_fixture_and_journey_wiring_are_declared() -> None:
         assert marker in checker_source
 
 
+def test_passkey_prompt_wait_only_skips_explicitly_ineligible_sessions() -> None:
+    script = """
+const assert = require('node:assert/strict');
+const { dismissProactivePasskeyPrompt } = require('./scripts/e2e/completeJourneyBrowser.cjs');
+(async () => {
+  for (const profile of [null, {}, { passkey_prompt_eligible: true },
+    { passkey_prompt_eligible: false }, { passkey_prompt_eligible: 0 }]) {
+    const calls = [];
+    const dialog = {
+      filter: () => dialog, last: () => dialog,
+      count: async () => 0,
+      waitFor: async (options) => calls.push(options),
+      locator: () => ({ click: async () => calls.push('dismiss') }),
+    };
+    const page = {
+      locator: () => dialog,
+      waitForResponse: (predicate) => {
+        const response = {
+          request: () => ({ method: () => 'POST' }),
+          url: () => 'http://127.0.0.1/api/auth/passkeys/prompt/dismiss',
+          ok: () => true,
+        };
+        assert.equal(predicate(response), true);
+        return Promise.resolve(response);
+      },
+    };
+    const ineligible = profile?.passkey_prompt_eligible === false;
+    assert.equal(await dismissProactivePasskeyPrompt(page, 5000, profile), !ineligible);
+    assert.deepEqual(calls, ineligible ? [] : [
+      { state: 'visible', timeout: 5000 }, 'dismiss', { state: 'detached' },
+    ]);
+  }
+  await assert.rejects(() => dismissProactivePasskeyPrompt({
+    locator: () => ({ count: async () => 1 }),
+  }, 5000, { passkey_prompt_eligible: false }), /Ineligible session/);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20
+    )
+    assert result.returncode == 0, result.stderr
+    source = (ROOT / "scripts/e2e/journeys/gardenMapPlants.cjs").read_text(encoding="utf-8")
+    assert "await dismissProactivePasskeyPrompt(page, 5_000, profileData);" in source
+
+
 def test_mobile_plot_hit_test_allows_plot_role_but_rejects_nested_controls() -> None:
     source = (ROOT / "scripts/e2e/journeys/gardenMapPlants.cjs").read_text(encoding="utf-8")
     hit_test = source.split("async function tapMapTarget", 1)[1].split(
